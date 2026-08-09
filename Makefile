@@ -94,6 +94,12 @@ lint:
 vuln:
 	cd backend && go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
+# Мутационная проверка: единственное доказательство, что тесты домена что-то
+# стерегут. Зелёный `go test` доказывает, что тесты выполнились, и ничего не
+# говорит о том, упали бы они на сломанном коде.
+mutation:  ## сломать домен намеренно и убедиться, что тесты краснеют
+	bash scripts/mutation-check.sh
+
 doctor:  ## что нужно поставить локально и чего не хватает
 	bash scripts/doctor.sh
 
@@ -117,6 +123,7 @@ verify: ## полный гейт: повторяет джоб backend из CI
 	$(MAKE) test-race
 	$(MAKE) lint
 	$(MAKE) vuln
+	$(MAKE) mutation
 	$(MAKE) hooks-test
 	@$(MAKE) --no-print-directory hooks-installed
 
