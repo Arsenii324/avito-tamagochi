@@ -21,10 +21,17 @@
 package pet
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"time"
+
+	"github.com/google/uuid"
+
+	"tamagochi/internal/config"
+	"tamagochi/pkg/clock"
 )
 
 // StatKey — показатель питомца. Значения дословно из перечисления StatKey
@@ -539,4 +546,328 @@ func clampStat(v int) int {
 		return statMax
 	}
 	return v
+}
+
+// --- Прикладной слой --------------------------------------------------------
+//
+// Ниже — сборка чистых функций выше в сценарии. Хранилище здесь конкретное
+// (*Repo), а не интерфейс: правило проекта — не заводить интерфейс, пока нет
+// второй реализации, и здесь её нет. Тестируемость от этого не страдает,
+// потому что вся арифметика живёт в чистых функциях выше и проверяется без
+// базы, а то, ради чего база нужна (однократность при повторе и при гонке),
+// фейком не проверяется в принципе — см. преамбулу pkg/pgtest.
+
+// ErrDailyLimit — суточный лимит самого действия исчерпан.
+//
+// Это не то же самое, что суточный кап опыта: кап обнуляет начисление, но
+// действие остаётся доступным, а лимит запрещает само действие.
+var ErrDailyLimit = errors.New("pet: суточный лимит действия исчерпан")
+
+// Actor — от чьего имени выполняется сценарий.
+type Actor struct {
+	// UserID — владелец питомца.
+	UserID uuid.UUID
+	// Location — таймзона аккаунта. По ней считаются сутки: контракт,
+	// правило 6 — «Сутки и стрик считаются по timezone аккаунта, а не по
+	// времени устройства». Пока аккаунтов нет, вызывающий передаёт UTC;
+	// когда приедет авторизация, сюда придёт таймзона из профиля.
+	Location *time.Location
+}
+
+// day возвращает календарные сутки в таймзоне аккаунта.
+func (a Actor) day(now time.Time) time.Time {
+	loc := a.Location
+	if loc == nil {
+		loc = time.UTC
+	}
+	y, m, d := now.In(loc).Date()
+	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
+}
+
+// Service собирает сценарии питомца.
+type Service struct {
+	repo     *Repo
+	clock    clock.Clock
+	economy  Economy
+	curve    config.Curve
+	dailyCap int
+}
+
+// NewService собирает сервис и отказывается собираться на бессмысленных
+// константах: ошибка в экономике — это неработающий сервис, и падать он
+// должен на старте, а не на первом действии пользователя.
+func NewService(repo *Repo, c clock.Clock, e Economy, curve config.Curve, dailyCap int) (*Service, error) {
+	switch {
+	case repo == nil:
+		return nil, errors.New("pet: нет репозитория")
+	case c == nil:
+		return nil, errors.New("pet: нет часов")
+	case dailyCap < 0:
+		return nil, fmt.Errorf("%w: суточный кап опыта %d", ErrInvalidEconomy, dailyCap)
+	}
+	if err := e.Validate(); err != nil {
+		return nil, err
+	}
+	if err := curve.Validate(); err != nil {
+		return nil, err
+	}
+	return &Service{repo: repo, clock: c, economy: e, curve: curve, dailyCap: dailyCap}, nil
+}
+
+// Availability — доступность одного действия на сегодня.
+type Availability struct {
+	// Remaining — сколько раз ещё можно сегодня.
+	Remaining int `json:"remaining"`
+	// XPCapped — суточный потолок опыта ухода исчерпан.
+	XPCapped bool `json:"xpCapped"`
+}
+
+// View — состояние питомца, каким его видит клиент.
+//
+// Всё производное (настроение, уровень, стадия, доступность действий)
+// посчитано сервером: контракт запрещает клиенту вычислять это самому.
+type View struct {
+	ID             uuid.UUID                   `json:"id"`
+	PresetID       string                      `json:"presetId"`
+	Name           string                      `json:"name"`
+	Stats          Stats                       `json:"stats"`
+	Sleeping       bool                        `json:"sleeping"`
+	Mood           Mood                        `json:"mood"`
+	MoodMultiplier float64                     `json:"moodMultiplier"`
+	Level          int                         `json:"level"`
+	XP             int                         `json:"xp"`
+	XPToNext       int                         `json:"xpToNext"`
+	TotalXP        int                         `json:"totalXp"`
+	Stage          int                         `json:"stage"`
+	StageLabel     string                      `json:"stageLabel"`
+	Actions        map[ActionKind]Availability `json:"actions"`
+	UpdatedAt      time.Time                   `json:"updatedAt"`
+}
+
+// ActResult — результат действия ухода.
+//
+// Сериализуется целиком и хранится в журнале: повтор обязан вернуть ПРЕЖНИЙ
+// результат, а не пересчитанный на новое время.
+type ActResult struct {
+	Pet              View `json:"pet"`
+	XPGained         int  `json:"xpGained"`
+	StatCapped       bool `json:"statCapped"`
+	LeveledUp        bool `json:"leveledUp"`
+	CareXPToday      int  `json:"careXpToday"`
+	CareXPCapReached bool `json:"careXpCapReached"`
+}
+
+// stageTiers — с какого уровня начинается стадия. Стадий четыре, как в
+// перечислении контракта (Pet.stage: 1..4).
+var stageTiers = []struct {
+	FromLevel int
+	Stage     int
+	Label     string
+}{
+	{FromLevel: 18, Stage: 4, Label: "Хранитель"},
+	{FromLevel: 10, Stage: 3, Label: "Знаток"},
+	{FromLevel: 5, Stage: 2, Label: "Искатель"},
+	{FromLevel: 1, Stage: 1, Label: "Новичок"},
+}
+
+// StageFor переводит уровень в стадию и её название.
+func StageFor(level int) (int, string) {
+	for _, t := range stageTiers {
+		if level >= t.FromLevel {
+			return t.Stage, t.Label
+		}
+	}
+	// Уровень меньше первого порога бывает только при испорченных данных;
+	// первая стадия честнее, чем ноль, которого нет в перечислении.
+	return stageTiers[len(stageTiers)-1].Stage, stageTiers[len(stageTiers)-1].Label
+}
+
+// view собирает состояние питомца на момент now.
+//
+// Ничего не пишет: показатели пересчитываются при каждом чтении из снимка,
+// см. преамбулу пакета.
+func (s *Service) view(rec Record, now time.Time, counts map[ActionKind]int, spentToday int) (View, error) {
+	cur := Decay(rec.Stats, rec.Sleeping, rec.StatsAt, now, s.economy)
+	mood, mul := MoodOf(cur, rec.Sleeping, s.economy)
+
+	progress, err := config.LevelFor(rec.TotalXP, s.curve)
+	if err != nil {
+		return View{}, fmt.Errorf("pet: уровень по опыту %d: %w", rec.TotalXP, err)
+	}
+	stage, label := StageFor(progress.Level)
+
+	capped := spentToday >= s.dailyCap
+	actions := make(map[ActionKind]Availability, len(ActionKinds))
+	for _, k := range ActionKinds {
+		remaining := s.economy.Actions[k].DailyLimit - counts[k]
+		if remaining < 0 {
+			remaining = 0
+		}
+		actions[k] = Availability{Remaining: remaining, XPCapped: capped}
+	}
+
+	return View{
+		ID:             rec.ID,
+		PresetID:       rec.PresetID,
+		Name:           rec.Name,
+		Stats:          cur,
+		Sleeping:       rec.Sleeping,
+		Mood:           mood,
+		MoodMultiplier: mul,
+		Level:          progress.Level,
+		XP:             progress.IntoLevel,
+		XPToNext:       progress.ToNext,
+		TotalXP:        rec.TotalXP,
+		Stage:          stage,
+		StageLabel:     label,
+		Actions:        actions,
+		UpdatedAt:      now,
+	}, nil
+}
+
+// Create заводит питомца пользователю. Второй питомец — ErrPetExists.
+func (s *Service) Create(ctx context.Context, a Actor, presetID, name string) (View, error) {
+	now := s.clock.Now()
+
+	rec := Record{
+		ID:       uuid.New(),
+		UserID:   a.UserID,
+		PresetID: presetID,
+		Name:     name,
+		// Новый питомец полон: пустые показатели на старте означали бы, что
+		// пользователь видит больного питомца в первую же секунду.
+		Stats:   Stats{Hunger: statMax, Joy: statMax, Clean: statMax, Energy: statMax},
+		StatsAt: now,
+	}
+	if err := s.repo.Create(ctx, rec); err != nil {
+		return View{}, err
+	}
+	return s.view(rec, now, nil, 0)
+}
+
+// Get возвращает состояние питомца.
+func (s *Service) Get(ctx context.Context, a Actor) (View, error) {
+	now := s.clock.Now()
+	day := a.day(now)
+
+	rec, err := s.repo.ByUser(ctx, a.UserID)
+	if err != nil {
+		return View{}, err
+	}
+	counts, err := s.repo.CountsToday(ctx, a.UserID, day)
+	if err != nil {
+		return View{}, err
+	}
+	spent, err := s.repo.SpentToday(ctx, a.UserID, day)
+	if err != nil {
+		return View{}, err
+	}
+	return s.view(rec, now, counts, spent)
+}
+
+// Act выполняет действие ухода.
+//
+// actionID приходит от клиента и делает вызов идемпотентным: повтор с тем же
+// идентификатором возвращает прежний результат и не начисляет опыт второй раз.
+func (s *Service) Act(ctx context.Context, a Actor, actionID uuid.UUID, kind ActionKind) (ActResult, error) {
+	now := s.clock.Now()
+	day := a.day(now)
+
+	if _, ok := s.economy.Actions[kind]; !ok {
+		return ActResult{}, fmt.Errorf("%w: %q", ErrUnknownAction, string(kind))
+	}
+
+	raw, _, err := s.repo.ApplyAction(ctx, a.UserID, actionID, kind, day, func(snap Snapshot) (Decision, error) {
+		return s.decide(snap, now, kind)
+	})
+	if err != nil {
+		return ActResult{}, err
+	}
+
+	var out ActResult
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return ActResult{}, fmt.Errorf("pet: разбор сохранённого результата действия: %w", err)
+	}
+	return out, nil
+}
+
+// decide — доменное решение по одному действию. Чистое относительно базы:
+// получает снимок, возвращает, что записать.
+func (s *Service) decide(snap Snapshot, now time.Time, kind ActionKind) (Decision, error) {
+	action := s.economy.Actions[kind]
+	if snap.CountsToday[kind] >= action.DailyLimit {
+		return Decision{}, fmt.Errorf("%w: %q, сделано %d из %d",
+			ErrDailyLimit, string(kind), snap.CountsToday[kind], action.DailyLimit)
+	}
+
+	// Распад досчитывается ДО действия: иначе кормление «отменяло» бы часы
+	// простоя, и питомец, к которому не заходили сутки, оказывался бы сытым
+	// от одного нажатия.
+	cur := Decay(snap.Pet.Stats, snap.Pet.Sleeping, snap.Pet.StatsAt, now, s.economy)
+
+	outcome, err := ApplyAction(kind, cur, snap.Pet.Sleeping, s.economy)
+	if err != nil {
+		return Decision{}, err
+	}
+
+	// Настроение берётся ПОСЛЕ изменения показателя — так требует контракт,
+	// правило 3.
+	_, moodMul := MoodOf(outcome.Stats, outcome.Sleeping, s.economy)
+
+	// Множитель стрика — единица: серия дней ещё не реализована. Это
+	// осознанная единица, а не забытый множитель: как только появится streak,
+	// сюда придёт его коэффициент, и порядок умножения уже правильный.
+	const streakMultiplier = 1.0
+
+	award, err := AwardXP(outcome.BaseXP, moodMul, streakMultiplier, snap.SpentToday, s.dailyCap)
+	if err != nil {
+		return Decision{}, err
+	}
+
+	before, err := config.LevelFor(snap.Pet.TotalXP, s.curve)
+	if err != nil {
+		return Decision{}, fmt.Errorf("pet: уровень до действия: %w", err)
+	}
+	updated := snap.Pet
+	updated.Stats = outcome.Stats
+	updated.Sleeping = outcome.Sleeping
+	updated.StatsAt = now
+	updated.TotalXP = snap.Pet.TotalXP + award.Granted
+
+	after, err := config.LevelFor(updated.TotalXP, s.curve)
+	if err != nil {
+		return Decision{}, fmt.Errorf("pet: уровень после действия: %w", err)
+	}
+
+	counts := make(map[ActionKind]int, len(snap.CountsToday)+1)
+	for k, v := range snap.CountsToday {
+		counts[k] = v
+	}
+	counts[kind]++
+	spent := snap.SpentToday + award.Granted
+
+	v, err := s.view(updated, now, counts, spent)
+	if err != nil {
+		return Decision{}, err
+	}
+
+	result, err := json.Marshal(ActResult{
+		Pet:              v,
+		XPGained:         award.Granted,
+		StatCapped:       outcome.StatCapped,
+		LeveledUp:        after.Level > before.Level,
+		CareXPToday:      spent,
+		CareXPCapReached: award.CapReached,
+	})
+	if err != nil {
+		return Decision{}, fmt.Errorf("pet: сериализация результата действия: %w", err)
+	}
+
+	return Decision{
+		Stats:     updated.Stats,
+		Sleeping:  updated.Sleeping,
+		StatsAt:   updated.StatsAt,
+		XPGranted: award.Granted,
+		Result:    result,
+	}, nil
 }
