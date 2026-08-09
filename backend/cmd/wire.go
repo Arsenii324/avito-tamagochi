@@ -12,6 +12,7 @@ import (
 	"tamagochi/internal/httpx"
 	"tamagochi/internal/pet"
 	"tamagochi/pkg/clock"
+	"tamagochi/pkg/wsh"
 )
 
 // apiPrefix — префикс всех эндпоинтов контракта. Взят из блока servers в
@@ -89,7 +90,18 @@ func newRouter(pool *pgxpool.Pool) (*gin.Engine, error) {
 	if demoModeEnabled() {
 		v1.Use(withDemoIdentity())
 	}
-	pet.NewHandler(petSvc).Register(v1)
+	petHandler := pet.NewHandler(petSvc, wsh.NewHub(), clock.Real{})
+	petHandler.Register(v1)
+
+	// /ws — своя группа, а не v1: контракт монтирует сокет вне /api/v1
+	// (docs/openapi.json → x-websocket.url). Group("") с пустым путём — это
+	// приём Gin для «та же основа, но своя цепочка middleware»: Use на этой
+	// группе не затрагивает ни v1, ни остальные маршруты r.
+	ws := r.Group("")
+	if demoModeEnabled() {
+		ws.Use(withDemoIdentity())
+	}
+	petHandler.RegisterWS(ws)
 
 	return r, nil
 }

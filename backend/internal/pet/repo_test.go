@@ -121,7 +121,7 @@ func TestRepeatedActionIsIdempotent(t *testing.T) {
 	// по совсем другой причине — тест перестал бы проверять идемпотентность.
 	f.clk.Advance(10 * time.Hour)
 
-	first, err := f.svc.Act(ctx, f.actor, actionID, pet.ActionFeed)
+	first, _, err := f.svc.Act(ctx, f.actor, actionID, pet.ActionFeed)
 	if err != nil {
 		t.Fatalf("первое действие: %v", err)
 	}
@@ -133,9 +133,12 @@ func TestRepeatedActionIsIdempotent(t *testing.T) {
 	// сохранённое, показатели в ответе разойдутся с первым ответом.
 	f.clk.Advance(3 * time.Hour)
 
-	second, err := f.svc.Act(ctx, f.actor, actionID, pet.ActionFeed)
+	second, secondReplayed, err := f.svc.Act(ctx, f.actor, actionID, pet.ActionFeed)
 	if err != nil {
 		t.Fatalf("повтор действия: %v", err)
+	}
+	if !secondReplayed {
+		t.Error("Act не сообщил replayed=true на повторе — вызывающий (WS-пуш) не узнает, что реального изменения не было")
 	}
 
 	if second.XPGained != first.XPGained {
@@ -181,7 +184,7 @@ func TestDailyCapIsEnforcedAcrossActions(t *testing.T) {
 	kinds := []pet.ActionKind{pet.ActionFeed, pet.ActionPlay, pet.ActionWash}
 	for round := range 6 {
 		for _, kind := range kinds {
-			res, err := f.svc.Act(ctx, f.actor, uuid.New(), kind)
+			res, _, err := f.svc.Act(ctx, f.actor, uuid.New(), kind)
 			if errors.Is(err, pet.ErrDailyLimit) {
 				continue
 			}
@@ -256,7 +259,7 @@ func raceRound(t *testing.T, f *fixture, racers int) (xpGained int) {
 		go func() {
 			defer wg.Done()
 			<-start // стартуем одновременно, иначе гонки может не случиться
-			res, err := f.svc.Act(ctx, f.actor, actionID, pet.ActionFeed)
+			res, _, err := f.svc.Act(ctx, f.actor, actionID, pet.ActionFeed)
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
@@ -337,7 +340,7 @@ func TestConcurrentDistinctActionsAllApply(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			_, _ = f.svc.Act(ctx, f.actor, uuid.New(), pet.ActionFeed)
+			_, _, _ = f.svc.Act(ctx, f.actor, uuid.New(), pet.ActionFeed)
 		}()
 	}
 	close(start)
@@ -410,7 +413,7 @@ func TestActionsWithoutPetReportNoPet(t *testing.T) {
 	if _, err := f.svc.Get(context.Background(), f.actor); !errors.Is(err, pet.ErrNoPet) {
 		t.Errorf("чтение без питомца: %v, ожидалась ErrNoPet", err)
 	}
-	if _, err := f.svc.Act(context.Background(), f.actor, uuid.New(), pet.ActionFeed); !errors.Is(err, pet.ErrNoPet) {
+	if _, _, err := f.svc.Act(context.Background(), f.actor, uuid.New(), pet.ActionFeed); !errors.Is(err, pet.ErrNoPet) {
 		t.Errorf("действие без питомца: %v, ожидалась ErrNoPet", err)
 	}
 }
@@ -424,7 +427,7 @@ func TestDecayIsAppliedBeforeTheAction(t *testing.T) {
 	// Сутки без захода: сытость 100 - 4*24 = 4.
 	f.clk.Advance(24 * time.Hour)
 
-	res, err := f.svc.Act(ctx, f.actor, uuid.New(), pet.ActionFeed)
+	res, _, err := f.svc.Act(ctx, f.actor, uuid.New(), pet.ActionFeed)
 	if err != nil {
 		t.Fatalf("кормление: %v", err)
 	}
@@ -449,7 +452,7 @@ func TestActionDailyLimitIsEnforced(t *testing.T) {
 	// переезжают за полночь и обнуляют именно тот счётчик, который проверяется.
 	limit := pet.DefaultEconomy.Actions[pet.ActionWash].DailyLimit
 	for i := range limit {
-		if _, err := f.svc.Act(ctx, f.actor, uuid.New(), pet.ActionWash); err != nil {
+		if _, _, err := f.svc.Act(ctx, f.actor, uuid.New(), pet.ActionWash); err != nil {
 			t.Fatalf("мытьё %d из %d: %v", i+1, limit, err)
 		}
 	}
@@ -457,7 +460,7 @@ func TestActionDailyLimitIsEnforced(t *testing.T) {
 		t.Fatalf("тест перешагнул полночь — суточный лимит обнулился, проверка недействительна")
 	}
 
-	_, err := f.svc.Act(ctx, f.actor, uuid.New(), pet.ActionWash)
+	_, _, err := f.svc.Act(ctx, f.actor, uuid.New(), pet.ActionWash)
 	if !errors.Is(err, pet.ErrDailyLimit) {
 		t.Fatalf("мытьё сверх лимита %d вернуло %v, ожидалась ErrDailyLimit", limit, err)
 	}

@@ -659,10 +659,14 @@ type View struct {
 // Сериализуется целиком и хранится в журнале: повтор обязан вернуть ПРЕЖНИЙ
 // результат, а не пересчитанный на новое время.
 type ActResult struct {
-	Pet              View `json:"pet"`
-	XPGained         int  `json:"xpGained"`
-	StatCapped       bool `json:"statCapped"`
-	LeveledUp        bool `json:"leveledUp"`
+	Pet        View `json:"pet"`
+	XPGained   int  `json:"xpGained"`
+	StatCapped bool `json:"statCapped"`
+	LeveledUp  bool `json:"leveledUp"`
+	// StageChanged — стадия питомца изменилась этим действием. Не в
+	// контракте (docs/openapi.json → ActionResult) — добавлено для WS-события
+	// level.up, чьё поле stageChanged есть в docs/openapi.json → x-websocket.
+	StageChanged     bool `json:"stageChanged,omitempty"`
 	CareXPToday      int  `json:"careXpToday"`
 	CareXPCapReached bool `json:"careXpCapReached"`
 }
@@ -779,26 +783,31 @@ func (s *Service) Get(ctx context.Context, a Actor) (View, error) {
 //
 // actionID приходит от клиента и делает вызов идемпотентным: повтор с тем же
 // идентификатором возвращает прежний результат и не начисляет опыт второй раз.
-func (s *Service) Act(ctx context.Context, a Actor, actionID uuid.UUID, kind ActionKind) (ActResult, error) {
+//
+// replayed=true означает, что это повтор уже выполненного actionID: Result —
+// прежний ответ, а не следствие нового изменения. Вызывающий (ws.go) обязан
+// не рассылать события реального времени на повтор: контракт требует слать
+// pet.stats «только при реальном изменении», а на повторе его нет.
+func (s *Service) Act(ctx context.Context, a Actor, actionID uuid.UUID, kind ActionKind) (result ActResult, replayed bool, err error) {
 	now := s.clock.Now()
 	day := a.day(now)
 
 	if _, ok := s.economy.Actions[kind]; !ok {
-		return ActResult{}, fmt.Errorf("%w: %q", ErrUnknownAction, string(kind))
+		return ActResult{}, false, fmt.Errorf("%w: %q", ErrUnknownAction, string(kind))
 	}
 
-	raw, _, err := s.repo.ApplyAction(ctx, a.UserID, actionID, kind, day, func(snap Snapshot) (Decision, error) {
+	raw, replayed, err := s.repo.ApplyAction(ctx, a.UserID, actionID, kind, day, func(snap Snapshot) (Decision, error) {
 		return s.decide(snap, now, kind)
 	})
 	if err != nil {
-		return ActResult{}, err
+		return ActResult{}, false, err
 	}
 
 	var out ActResult
 	if unmarshalErr := json.Unmarshal(raw, &out); unmarshalErr != nil {
-		return ActResult{}, fmt.Errorf("pet: разбор сохранённого результата действия: %w", unmarshalErr)
+		return ActResult{}, false, fmt.Errorf("pet: разбор сохранённого результата действия: %w", unmarshalErr)
 	}
-	return out, nil
+	return out, replayed, nil
 }
 
 // decide — доменное решение по одному действию. Чистое относительно базы:
@@ -861,11 +870,15 @@ func (s *Service) decide(snap Snapshot, now time.Time, kind ActionKind) (Decisio
 		return Decision{}, err
 	}
 
+	beforeStage, _ := StageFor(before.Level)
+	afterStage, _ := StageFor(after.Level)
+
 	result, err := json.Marshal(ActResult{
 		Pet:              v,
 		XPGained:         award.Granted,
 		StatCapped:       outcome.StatCapped,
 		LeveledUp:        after.Level > before.Level,
+		StageChanged:     afterStage != beforeStage,
 		CareXPToday:      spent,
 		CareXPCapReached: award.CapReached,
 	})

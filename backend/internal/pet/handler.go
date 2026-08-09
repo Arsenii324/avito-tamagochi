@@ -10,6 +10,8 @@ import (
 	"tamagochi/internal/api"
 	"tamagochi/internal/httpx"
 	"tamagochi/pkg/authctx"
+	"tamagochi/pkg/clock"
+	"tamagochi/pkg/wsh"
 )
 
 // Слой транспорта: знает про Gin и про типы контракта, не знает, как считается
@@ -20,16 +22,36 @@ import (
 // Handler отвечает на HTTP для тега pet.
 type Handler struct {
 	svc *Service
+	hub *wsh.Hub
+	clk clock.Clock
+	bc  *Broadcaster
 }
 
-// NewHandler собирает обработчик.
-func NewHandler(svc *Service) *Handler { return &Handler{svc: svc} }
+// NewHandler собирает обработчик. hub может быть nil — тогда WS не работает,
+// а HTTP-часть (create/get/act) остаётся полностью рабочей: полезно в тестах,
+// которым события реального времени не нужны.
+func NewHandler(svc *Service, hub *wsh.Hub, clk clock.Clock) *Handler {
+	h := &Handler{svc: svc, hub: hub, clk: clk}
+	if hub != nil {
+		h.bc = NewBroadcaster(hub, clk)
+	}
+	return h
+}
 
-// Register вешает маршруты тега pet на переданную группу.
+// Register вешает REST-маршруты тега pet на переданную группу (/api/v1).
 func (h *Handler) Register(r gin.IRoutes) {
 	r.POST("/pets", h.create)
 	r.GET("/pet", h.get)
 	r.POST("/pet/actions", h.act)
+}
+
+// RegisterWS вешает /ws — ВНЕ apiPrefix, ровно по URL из контракта
+// (docs/openapi.json → x-websocket.url: `wss://.../ws?token=...`, без
+// префикса /api/v1). Отдельный метод, а не строка в Register: вызывающий
+// (cmd/wire.go) обязан отдать её другой группе маршрутов, и разные сигнатуры
+// делают перепутанный вызов ошибкой компиляции, а не тихим багом маршрутизации.
+func (h *Handler) RegisterWS(r gin.IRoutes) {
+	r.GET("/ws", h.serveWS)
 }
 
 // actor достаёт пользователя из контекста запроса.
@@ -120,7 +142,7 @@ func (h *Handler) act(c *gin.Context) {
 		return
 	}
 
-	res, err := h.svc.Act(c.Request.Context(), a, actionID, ActionKind(body.Kind))
+	res, replayed, err := h.svc.Act(c.Request.Context(), a, actionID, ActionKind(body.Kind))
 	switch {
 	case errors.Is(err, ErrNoPet):
 		httpx.Fail(c.Writer, c.Request, http.StatusNotFound, api.NOTFOUND, "Питомца ещё нет")
@@ -139,6 +161,13 @@ func (h *Handler) act(c *gin.Context) {
 		return
 	}
 
+	// Пуш — после того, как HTTP-ответ решён, но до его записи: неудача пуша
+	// (никто не слушает, соединение мертво) не должна влиять на HTTP-ответ,
+	// а лишний поход в сеть — не повод задержать его дальше необходимого.
+	if h.bc != nil {
+		h.bc.PushAction(a.UserID, ActionKind(body.Kind), res, replayed)
+	}
+
 	httpx.OK(c.Writer, c.Request, http.StatusOK, toAPIActionResult(res), "Питомец обновлён")
 }
 
@@ -151,6 +180,15 @@ func internalError(c *gin.Context, err error) {
 	// пользователя, а подробности ошибки — для того, кто читает логи сервера.
 	_ = err
 	httpx.Fail(c.Writer, c.Request, http.StatusInternalServerError, api.INTERNALERROR, "Внутренняя ошибка сервера")
+}
+
+// toAPIStats переводит доменные Stats в тип контракта.
+//
+// Отдельная функция, а не инлайн в каждом месте: ту же конверсию использует
+// и toAPIPet (REST), и ws.go (payload события pet.stats) — без неё поля
+// расходятся молча, как уже случилось один раз (см. докстринг StatsPayload).
+func toAPIStats(s Stats) api.Stats {
+	return api.Stats{Hunger: s.Hunger, Joy: s.Joy, Clean: s.Clean, Energy: s.Energy}
 }
 
 // toAPIPet переводит доменный View в тип контракта.
@@ -177,7 +215,7 @@ func toAPIPet(v View) api.Pet {
 		TotalXp:        v.TotalXP,
 		Stage:          api.PetStage(v.Stage),
 		StageLabel:     &v.StageLabel,
-		Stats:          api.Stats{Hunger: v.Stats.Hunger, Joy: v.Stats.Joy, Clean: v.Stats.Clean, Energy: v.Stats.Energy},
+		Stats:          toAPIStats(v.Stats),
 		Mood:           api.PetMood(v.Mood),
 		MoodMultiplier: float32(v.MoodMultiplier),
 		Actions:        actions,
