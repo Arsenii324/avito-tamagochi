@@ -64,9 +64,9 @@ func Pool(t *testing.T) *pgxpool.Pool {
 	if err != nil {
 		t.Fatalf("pgtest: не могу подключиться к %s: %v", EnvVar, err)
 	}
-	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+quoteIdent(schema)); err != nil {
+	if _, createErr := admin.Exec(ctx, "CREATE SCHEMA "+quoteIdent(schema)); createErr != nil {
 		admin.Close()
-		t.Fatalf("pgtest: создание схемы %s: %v", schema, err)
+		t.Fatalf("pgtest: создание схемы %s: %v", schema, createErr)
 	}
 	admin.Close()
 
@@ -77,9 +77,9 @@ func Pool(t *testing.T) *pgxpool.Pool {
 
 	// Миграции накатываются в личную схему: search_path уже указывает на неё,
 	// поэтому и таблицы, и служебная таблица версий goose создаются внутри.
-	if err := postgres.Migrate(ctx, scoped); err != nil {
+	if migrateErr := postgres.Migrate(ctx, scoped); migrateErr != nil {
 		dropSchema(t, dsn, schema)
-		t.Fatalf("pgtest: накат миграций в %s: %v", schema, err)
+		t.Fatalf("pgtest: накат миграций в %s: %v", schema, migrateErr)
 	}
 
 	pool, err := postgres.New(ctx, scoped)
@@ -162,8 +162,8 @@ func dropSchema(t *testing.T, dsn, schema string) {
 	}
 	defer pool.Close()
 
-	if _, err := pool.Exec(ctx, "DROP SCHEMA IF EXISTS "+quoteIdent(schema)+" CASCADE"); err != nil {
-		t.Logf("pgtest: схема %s осталась в базе: %v", schema, err)
+	if _, dropErr := pool.Exec(ctx, "DROP SCHEMA IF EXISTS "+quoteIdent(schema)+" CASCADE"); dropErr != nil {
+		t.Logf("pgtest: схема %s осталась в базе: %v", schema, dropErr)
 	}
 }
 

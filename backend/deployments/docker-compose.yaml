@@ -28,6 +28,10 @@ services:
       # Та же база, что и для локальных тестов; изнутри контейнера адрес — имя
       # сервиса, а не localhost.
       DATABASE_URL: postgres://${POSTGRES_USER:-tamagochi}:${POSTGRES_PASSWORD:-tamagochi}@postgres:5432/${POSTGRES_DB:-tamagochi}?sslmode=disable
+      # demo монтирует заглушку личности (cmd/demo_identity.go): без неё
+      # /pet отвечает 401 на любой запрос, потому что настоящего входа ещё
+      # нет. Переопределяется в APP_ENV=production, когда он появится.
+      APP_ENV: ${APP_ENV:-demo}
     ports:
       - "8080:8080"
     depends_on:

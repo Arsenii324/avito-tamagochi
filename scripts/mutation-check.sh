@@ -33,7 +33,7 @@ fi
 # вместо частичного, максимум вместо минимума. Именно такие правки проходят
 # компилятор и линтер и не ловятся ничем, кроме теста.
 MUTATIONS=(
-  "распад округляет вверх вместо вниз|internal/pet/service.go|s|v = math.Floor(v)|v = math.Ceil(v)|;t|TestDecayMatchesHandComputedValues"
+  "распад округляет вниз вместо к ближайшему|internal/pet/service.go|s|v = math.Round(v)|v = math.Trunc(v)|;t|TestDecayMatchesHandComputedValues"
   "распад не игнорирует обратный ход часов|internal/pet/service.go|s|if !(hours > 0) {|if false {|;t|TestDecayIgnoresBackwardsClock"
   "настроение берёт максимум вместо минимума|internal/pet/service.go|s|if v < m {|if v > m {|;t|TestMoodIsDerivedFromMinimumStat"
   "опыт округляется дважды|internal/pet/service.go|s|want := math.Floor(float64(baseXP) \* moodMul \* streakMul)|want := math.Floor(math.Floor(float64(baseXP)*moodMul) * streakMul)|;t|TestXPRoundsDownOnceAfterBothMultipliers"
@@ -44,6 +44,29 @@ MUTATIONS=(
 
 failed=0
 checked=0
+
+# Снимок затрагиваемых файлов ДО мутаций, а не `git diff` против HEAD после:
+# в рабочем дереве почти всегда есть незакоммиченный WIP (в этой сессии он
+# есть постоянно), и сравнение с HEAD путает «скрипт забыл откатить мутацию»
+# с «в дереве есть незавершённая работа» — то есть краснеет на пустом месте
+# ровно тогда, когда проверять нечего. Хэш файлов до и после — единственное,
+# что действительно проверяет утверждение «скрипт всегда возвращает файл
+# к тому, с чего начал».
+#
+# Без своего trap: у snapshot_dir нет ничего критичного для отката (это
+# скретч-файл с хэшами, не мутированный исходник), а EXIT-trap в bash не
+# накапливается — второй `trap ... EXIT` внутри цикла ниже молча заменил бы
+# этот. Чистится явно в конце обычного пути; при Ctrl-C переживёт как мусор
+# в /tmp, что не опаснее любого другого mktemp -d в этом скретче.
+snapshot_dir="$(mktemp -d)"
+declare -A touched_files
+for row in "${MUTATIONS[@]}"; do
+  IFS='|' read -r _ file _ _ _ _ _ <<<"$row"
+  touched_files["$BACKEND/$file"]=1
+done
+for f in "${!touched_files[@]}"; do
+  sha256sum "$f" >> "$snapshot_dir/before.sha256"
+done
 
 for row in "${MUTATIONS[@]}"; do
   IFS='|' read -r desc file expr_pat expr_from expr_to expr_tail test_name <<<"$row"
@@ -92,11 +115,17 @@ if [ "$failed" -ne 0 ]; then
 fi
 echo "${GREEN}Все $checked мутаций пойманы.${OFF}"
 
-# Последняя проверка: после всех восстановлений дерево обязано быть чистым.
-# Иначе скрипт оставил бы за собой сломанный исходник.
-if ! git diff --quiet -- "$BACKEND"; then
-  echo "${RED}Скрипт оставил изменения в рабочем дереве:${OFF}"
-  git diff --stat -- "$BACKEND"
+# Последняя проверка: каждый затронутый файл обязан вернуться РОВНО к тому
+# состоянию, в котором был до первой мутации — сверка по хэшу, а не по
+# `git diff` против HEAD (тот путал бы откат мутации с обычным WIP, см. выше).
+for f in "${!touched_files[@]}"; do
+  sha256sum "$f" >> "$snapshot_dir/after.sha256"
+done
+if ! diff -u <(sort "$snapshot_dir/before.sha256") <(sort "$snapshot_dir/after.sha256") >/dev/null; then
+  echo "${RED}Скрипт не восстановил файлы после мутаций:${OFF}"
+  diff -u <(sort "$snapshot_dir/before.sha256") <(sort "$snapshot_dir/after.sha256")
+  rm -rf "$snapshot_dir"
   exit 1
 fi
-echo "Рабочее дерево чистое."
+rm -rf "$snapshot_dir"
+echo "Затронутые файлы побайтово совпадают с состоянием до прогона."

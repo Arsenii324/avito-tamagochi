@@ -371,8 +371,8 @@ func TestReadingDoesNotAgePet(t *testing.T) {
 	// Много чтений вперемешку с ходом часов.
 	for range 20 {
 		f.clk.Advance(30 * time.Minute)
-		if _, err := f.svc.Get(ctx, f.actor); err != nil {
-			t.Fatalf("чтение: %v", err)
+		if _, readErr := f.svc.Get(ctx, f.actor); readErr != nil {
+			t.Fatalf("чтение: %v", readErr)
 		}
 	}
 

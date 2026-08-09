@@ -40,11 +40,13 @@ func TestDecayMatchesHandComputedValues(t *testing.T) {
 			want:  Stats{Hunger: 92, Joy: 94, Clean: 96, Energy: 94},
 		},
 		{
-			// 3/ч за 1.5 ч — это 4.5: округление вниз обязано дать 95, а не 96.
-			name:  "полтора часа — половинки округляются вниз",
+			// 3/ч за 1.5 ч — это 4.5: округление до ближайшего (не вниз, см.
+			// комментарий у roundToStat) даёт 96, а не 95: 100−4.5=95.5,
+			// round-half-away-from-zero → 96.
+			name:  "полтора часа — округление до ближайшего, не вниз",
 			start: full(),
 			after: 1.5,
-			want:  Stats{Hunger: 94, Joy: 95, Clean: 97, Energy: 95},
+			want:  Stats{Hunger: 94, Joy: 96, Clean: 97, Energy: 96},
 		},
 		{
 			name:  "сутки без захода — питомец жив, но плох",
@@ -78,11 +80,16 @@ func TestDecayMatchesHandComputedValues(t *testing.T) {
 
 // invariant:5 — распад на интервал совпадает с независимой замкнутой формой.
 //
-// Реализация считает floor(start - rate*hours). Модель здесь считает
-// start - ceil(rate*hours) — алгебраически то же самое для целого start, но
-// записанное другим выражением, с округлением в другую сторону и в другом
-// месте. Ошибка в знаке, в единицах (час против минуты) или в порядке
-// округления ломает совпадение.
+// Реализация округляет (start - rate*hours) вызовом math.Round. Модель здесь
+// округляет ТО ЖЕ выражение через floor(y + 0.5), а не через math.Round —
+// иной механизм округления той же величины, а не порядок действий, который
+// её вычисляет. Раньше в этом тесте модель раскладывала выражение на
+// start - round(rate*hours) и звала это «алгебраически тем же самым»; это
+// оказалось неверно и найдено этим же тестом: round(n−x) ≠ n−round(x) на
+// половинных значениях (50 − 7.5 = 42.5 → округляется в 43, а не в
+// 50 − round(7.5) = 50 − 8 = 42) — округление до ближайшего чётного/нечётного
+// не переносится через вычитание линейно. Ошибка в знаке, в единицах (час
+// против минуты) или в направлении округления по-прежнему ломает совпадение.
 func TestDecayAgreesWithIndependentClosedForm(t *testing.T) {
 	intervals := []float64{0.1, 0.25, 0.5, 1, 1.5, 2, 3.75, 7, 12, 23.5}
 	starts := []int{100, 87, 50, 13, 1}
@@ -94,7 +101,8 @@ func TestDecayAgreesWithIndependentClosedForm(t *testing.T) {
 
 			for _, k := range StatKeys {
 				rate := DefaultEconomy.DecayPerHour[k]
-				want := start - int(math.Ceil(rate*iv))
+				y := float64(start) - rate*iv
+				want := int(math.Floor(y + 0.5))
 				if want < 0 {
 					want = 0
 				}
@@ -280,14 +288,14 @@ func TestSleepAndWakeGuards(t *testing.T) {
 		t.Error("после sleep питомец не спит")
 	}
 
-	if _, err := ApplyAction(ActionSleep, awake, true, DefaultEconomy); !errors.Is(err, ErrAlreadyAsleep) {
-		t.Errorf("сон спящего: %v, ожидалось ErrAlreadyAsleep", err)
+	if _, sleepErr := ApplyAction(ActionSleep, awake, true, DefaultEconomy); !errors.Is(sleepErr, ErrAlreadyAsleep) {
+		t.Errorf("сон спящего: %v, ожидалось ErrAlreadyAsleep", sleepErr)
 	}
-	if _, err := ApplyAction(ActionWake, awake, false, DefaultEconomy); !errors.Is(err, ErrNotAsleep) {
-		t.Errorf("разбудить бодрствующего: %v, ожидалось ErrNotAsleep", err)
+	if _, wakeErr := ApplyAction(ActionWake, awake, false, DefaultEconomy); !errors.Is(wakeErr, ErrNotAsleep) {
+		t.Errorf("разбудить бодрствующего: %v, ожидалось ErrNotAsleep", wakeErr)
 	}
-	if _, err := ApplyAction(ActionFeed, awake, true, DefaultEconomy); !errors.Is(err, ErrAsleep) {
-		t.Errorf("кормление спящего: %v, ожидалось ErrAsleep", err)
+	if _, careErr := ApplyAction(ActionFeed, awake, true, DefaultEconomy); !errors.Is(careErr, ErrAsleep) {
+		t.Errorf("кормление спящего: %v, ожидалось ErrAsleep", careErr)
 	}
 }
 
@@ -423,8 +431,8 @@ func TestDefaultEconomyIsValid(t *testing.T) {
 // это гейт, который мог сработать по другой причине.
 func TestEconomyValidateRejectsBrokenTables(t *testing.T) {
 	cases := []struct {
-		name   string
-		break_ func(e *Economy)
+		name    string
+		corrupt func(e *Economy)
 	}{
 		{"нет ставки распада", func(e *Economy) { delete(e.DecayPerHour, StatJoy) }},
 		{"отрицательная ставка распада", func(e *Economy) { e.DecayPerHour[StatJoy] = -1 }},
@@ -457,7 +465,7 @@ func TestEconomyValidateRejectsBrokenTables(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			e := cloneEconomy(DefaultEconomy)
-			c.break_(&e)
+			c.corrupt(&e)
 			if err := e.Validate(); !errors.Is(err, ErrInvalidEconomy) {
 				t.Fatalf("получено %v, ожидалась ErrInvalidEconomy", err)
 			}

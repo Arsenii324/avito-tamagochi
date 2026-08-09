@@ -5,10 +5,13 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"tamagochi/internal/api"
 	"tamagochi/internal/config"
 	"tamagochi/internal/httpx"
+	"tamagochi/internal/pet"
+	"tamagochi/pkg/clock"
 )
 
 // apiPrefix — префикс всех эндпоинтов контракта. Взят из блока servers в
@@ -21,7 +24,15 @@ const apiPrefix = "/api/v1"
 // конкретной причине: main.go переписывает и feat/pet-service, и всякий, кто
 // добавляет свой пакет, — это самый конфликтный файл бэкенда. Пока сборка
 // живёт здесь, чужой мерж трогает три строки в main.go, а не весь wiring.
-func newRouter() (*gin.Engine, error) {
+//
+// pool обязателен, не *pgxpool.Pool-или-nil: приложению без базы нечего
+// отвечать на /pet, а «роутер работает, но фича молча выключена» — это
+// расхождение между тем, что говорит код, и тем, что видит пользователь.
+// Тесты, которым база не нужна семантически (healthz, /config), всё равно
+// поднимают её через pkg/pgtest — так же, как это уже делают тесты
+// internal/pet, и по той же причине: собрать роутер без базы — значит
+// проверить не тот роутер, что поедет в прод.
+func newRouter(pool *pgxpool.Pool) (*gin.Engine, error) {
 	// ReleaseMode: в отладочном Gin печатает в stdout список маршрутов и
 	// предупреждение о режиме на каждом старте, включая каждый запуск тестов.
 	gin.SetMode(gin.ReleaseMode)
@@ -60,6 +71,25 @@ func newRouter() (*gin.Engine, error) {
 		return nil, fmt.Errorf("сборка обработчика config: %w", err)
 	}
 	cfg.Register(v1)
+
+	petSvc, err := pet.NewService(pet.NewRepo(pool), clock.Real{}, pet.DefaultEconomy, config.DefaultCurve, config.DefaultDailyCareXPCap)
+	if err != nil {
+		return nil, fmt.Errorf("сборка сервиса pet: %w", err)
+	}
+
+	// Демо-личность монтируется здесь, а не в main, потому что порядок важен:
+	// r.Use на группе действует только на маршруты, зарегистрированные ПОСЛЕ
+	// вызова. /config уже зарегистрирован строкой выше и остаётся публичным
+	// (security: [] в контракте); всё, что регистрируется после этой строки,
+	// проходит через withDemoIdentity.
+	//
+	// Вне APP_ENV=demo миддлварь не монтируется вообще: authctx.UserID тогда
+	// всегда возвращает false, и pet-обработчики честно отвечают 401 —
+	// закрыто по умолчанию, а не «работает, пока никто не заметил».
+	if demoModeEnabled() {
+		v1.Use(withDemoIdentity())
+	}
+	pet.NewHandler(petSvc).Register(v1)
 
 	return r, nil
 }

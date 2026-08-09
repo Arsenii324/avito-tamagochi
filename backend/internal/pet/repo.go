@@ -158,15 +158,15 @@ func countsToday(ctx context.Context, q pgxQuerier, userID uuid.UUID, day time.T
 	for rows.Next() {
 		var kind string
 		var n int
-		if err := rows.Scan(&kind, &n); err != nil {
-			return nil, fmt.Errorf("pet: чтение счётчика действий: %w", err)
+		if scanErr := rows.Scan(&kind, &n); scanErr != nil {
+			return nil, fmt.Errorf("pet: чтение счётчика действий: %w", scanErr)
 		}
 		counts[ActionKind(kind)] = n
 	}
 	// rows.Err() обязателен: ошибка, случившаяся посреди выборки, иначе
 	// выглядит как пустой результат. Это и проверяет линтер rowserrcheck.
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("pet: обход счётчиков действий: %w", err)
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return nil, fmt.Errorf("pet: обход счётчиков действий: %w", rowsErr)
 	}
 	return counts, nil
 }

@@ -14,8 +14,9 @@
 //
 // Альтернатива — дописывать в базу пересчитанное значение на каждом GET —
 // выглядит эквивалентной и таковой не является: показатели целые, при каждой
-// записи результат округляется вниз, и питомец «худеет» тем быстрее, чем чаще
-// пользователь открывает экран. Наблюдение меняло бы наблюдаемое. Инвариант
+// записи результат округляется и теряет дробную часть, и питомец «худеет»
+// тем быстрее, чем чаще пользователь открывает экран. Наблюдение меняло бы
+// наблюдаемое. Инвариант
 // «чтение не меняет состояние» держится тем, что Decay ничего не пишет, и
 // закреплён тестом TestReadingDoesNotAgePet.
 package pet
@@ -354,7 +355,7 @@ func Decay(s Stats, sleeping bool, from, to time.Time, e Economy) Stats {
 		}
 		// Округление вниз одно и на весь интервал, а не по шагам: пошаговое
 		// округление даёт разный результат при разной частоте пересчёта.
-		next, err := out.with(k, floorToStat(float64(cur)-e.DecayPerHour[k]*hours))
+		next, err := out.with(k, roundToStat(float64(cur)-e.DecayPerHour[k]*hours))
 		if err != nil {
 			continue
 		}
@@ -365,23 +366,32 @@ func Decay(s Stats, sleeping bool, from, to time.Time, e Economy) Stats {
 	}
 
 	if sleeping {
-		if next, err := out.with(StatEnergy, floorToStat(float64(s.Energy)+e.SleepEnergyPerHour*hours)); err == nil {
+		if next, err := out.with(StatEnergy, roundToStat(float64(s.Energy)+e.SleepEnergyPerHour*hours)); err == nil {
 			out = next
 		}
 	}
 	return out
 }
 
-// floorToStat округляет вниз и зажимает в 0..100, ограничивая ЕЩЁ ВО FLOAT.
+// roundToStat округляет до ближайшего целого и зажимает в 0..100, ограничивая
+// ЕЩЁ ВО FLOAT.
 //
 // Порядок важен ровно по той же причине, что и в config.Costs: преобразование
 // float64 в int вне диапазона типа в Go не определено, поэтому потолок надо
 // применять до преобразования, а не после.
-func floorToStat(v float64) int {
+//
+// Округление вниз (было раньше) — не требование контракта: «округление вниз»
+// в контракте сказано ровно один раз и ровно про формулу XP, не про распад
+// показателей. С floor любой, сколь угодно малый положительный интервал
+// снимал 1 очко: floor(100 − ε) = 99 для любого ε>0, то есть питомец переставал
+// показывать «100» практически сразу после создания — воспроизведено вручную
+// через реальный HTTP-запрос (curl сразу после POST /pets), не найдено
+// юнит-тестами, потому что все они двигали часы на целые интервалы.
+func roundToStat(v float64) int {
 	if math.IsNaN(v) {
 		return statMin
 	}
-	v = math.Floor(v)
+	v = math.Round(v)
 	if v < statMin {
 		return statMin
 	}
@@ -785,8 +795,8 @@ func (s *Service) Act(ctx context.Context, a Actor, actionID uuid.UUID, kind Act
 	}
 
 	var out ActResult
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return ActResult{}, fmt.Errorf("pet: разбор сохранённого результата действия: %w", err)
+	if unmarshalErr := json.Unmarshal(raw, &out); unmarshalErr != nil {
+		return ActResult{}, fmt.Errorf("pet: разбор сохранённого результата действия: %w", unmarshalErr)
 	}
 	return out, nil
 }

@@ -54,9 +54,9 @@ func New(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
 
 	pingCtx, cancel := context.WithTimeout(ctx, connectTimeout)
 	defer cancel()
-	if err := pool.Ping(pingCtx); err != nil {
+	if pingErr := pool.Ping(pingCtx); pingErr != nil {
 		pool.Close()
-		return nil, fmt.Errorf("postgres: база не отвечает: %w", err)
+		return nil, fmt.Errorf("postgres: база не отвечает: %w", pingErr)
 	}
 
 	return pool, nil
@@ -88,14 +88,14 @@ func Migrate(ctx context.Context, dsn string) error {
 	// Логгер goose по умолчанию печатает в stdout на каждый прогон, включая
 	// каждый тест. Молчим: результат виден по ошибке, а не по логу.
 	goose.SetLogger(goose.NopLogger())
-	if err := goose.SetDialect("postgres"); err != nil {
-		return fmt.Errorf("postgres: диалект goose: %w", err)
+	if dialectErr := goose.SetDialect("postgres"); dialectErr != nil {
+		return fmt.Errorf("postgres: диалект goose: %w", dialectErr)
 	}
 
 	// "." — корень встроенной ФС: пакет migrations встраивает свои .sql
 	// без вложенного каталога.
-	if err := goose.UpContext(ctx, db, "."); err != nil {
-		return fmt.Errorf("postgres: накат миграций: %w", err)
+	if upErr := goose.UpContext(ctx, db, "."); upErr != nil {
+		return fmt.Errorf("postgres: накат миграций: %w", upErr)
 	}
 	return nil
 }

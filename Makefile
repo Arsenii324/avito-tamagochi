@@ -106,6 +106,9 @@ doctor:  ## что нужно поставить локально и чего н
 reconcile:  ## состояние docs/RECONCILIATION.md по коду, а не по галочкам
 	bash scripts/reconcile-check.sh
 
+invariants:  ## какие инварианты docs/ARCHITECTURE.md реально покрыты тестом
+	bash scripts/invariant-check.sh
+
 # Предупреждение, а не ошибка: гейт для человека включается одной командой,
 # но забыть её слишком легко, и тогда pre-push просто не существует.
 hooks-installed:
