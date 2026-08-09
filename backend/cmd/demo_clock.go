@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -31,7 +32,7 @@ func registerDemoClockDebug(r gin.IRoutes, clk *clock.Fixed) {
 		c.JSON(http.StatusOK, gin.H{"now": clk.Now().Format(time.RFC3339)})
 	})
 
-	r.POST("/debug/clock/advance", func(c *gin.Context) {
+	r.POST("/debug/clock/advance", requireDebugToken(), func(c *gin.Context) {
 		var body struct {
 			// AdvanceHours — на сколько часов вперёд сдвинуть демо-часы; дробные
 			// значения допустимы (0.5 = на полчаса). Отрицательное значение
@@ -46,4 +47,28 @@ func registerDemoClockDebug(r gin.IRoutes, clk *clock.Fixed) {
 		clk.Advance(time.Duration(body.AdvanceHours * float64(time.Hour)))
 		c.JSON(http.StatusOK, gin.H{"now": clk.Now().Format(time.RFC3339)})
 	})
+}
+
+// requireDebugToken запирает мутирующий сдвиг часов токеном из переменной
+// окружения DEBUG_TOKEN, если она задана. Локально и на закрытом демо-стенде
+// переменную можно не задавать — поведение не меняется. На публичном URL
+// (docs/DEPLOYMENT.md) задать обязательно: без токена сдвинуть общие
+// демо-часы (а значит и то, что видит demo-пользователь у всех посетителей
+// одновременно) может кто угодно, кто найдёт путь — это не приватный стенд.
+//
+// GET /debug/clock токеном не закрыт: он только читает текущее показание,
+// закрывать нечего.
+func requireDebugToken() gin.HandlerFunc {
+	token := os.Getenv("DEBUG_TOKEN")
+	return func(c *gin.Context) {
+		if token == "" {
+			c.Next()
+			return
+		}
+		if c.GetHeader("X-Debug-Token") != token {
+			c.AbortWithStatus(http.StatusUnauthorized)
+			return
+		}
+		c.Next()
+	}
 }

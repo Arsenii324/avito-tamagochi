@@ -97,3 +97,57 @@ func TestDebugClockAdvanceMovesSharedDomainClock(t *testing.T) {
 		t.Errorf("hunger после сдвига на 10ч = %d, ожидалось 60 — сдвиг демо-часов должен доходить до domain-слоя", env.Data.Stats.Hunger)
 	}
 }
+
+// Без DEBUG_TOKEN сдвиг часов работает как раньше — локальный демо-стенд не
+// должен требовать токен, который никто не задавал.
+func TestDebugClockAdvanceWithoutTokenConfiguredStillWorks(t *testing.T) {
+	t.Setenv("APP_ENV", "demo")
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/debug/clock/advance", bytes.NewReader([]byte(`{"advanceHours":1}`)))
+	req.Header.Set("Content-Type", "application/json")
+	mustRouter(t).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("без DEBUG_TOKEN: статус %d, ожидался %d", rec.Code, http.StatusOK)
+	}
+}
+
+// С заданным DEBUG_TOKEN сдвиг часов без правильного заголовка X-Debug-Token
+// обязан отказать — иначе публичный URL демо-стенда сможет дёргать любой
+// посетитель (docs/DEPLOYMENT.md).
+func TestDebugClockAdvanceRequiresConfiguredToken(t *testing.T) {
+	t.Setenv("APP_ENV", "demo")
+	t.Setenv("DEBUG_TOKEN", "секрет")
+	router := mustRouter(t)
+
+	post := func(headerValue string) int {
+		req := httptest.NewRequest(http.MethodPost, "/debug/clock/advance", bytes.NewReader([]byte(`{"advanceHours":1}`)))
+		req.Header.Set("Content-Type", "application/json")
+		if headerValue != "" {
+			req.Header.Set("X-Debug-Token", headerValue)
+		}
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	if got := post(""); got != http.StatusUnauthorized {
+		t.Errorf("без заголовка: статус %d, ожидался %d", got, http.StatusUnauthorized)
+	}
+	if got := post("неверный"); got != http.StatusUnauthorized {
+		t.Errorf("неверный токен: статус %d, ожидался %d", got, http.StatusUnauthorized)
+	}
+	if got := post("секрет"); got != http.StatusOK {
+		t.Errorf("верный токен: статус %d, ожидался %d", got, http.StatusOK)
+	}
+}
+
+// GET /debug/clock ничего не меняет — токен ему не нужен даже когда задан.
+func TestDebugClockReadIsNeverGated(t *testing.T) {
+	t.Setenv("APP_ENV", "demo")
+	t.Setenv("DEBUG_TOKEN", "секрет")
+	rec := httptest.NewRecorder()
+	mustRouter(t).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/debug/clock", nil))
+	if rec.Code != http.StatusOK {
+		t.Errorf("GET /debug/clock с заданным DEBUG_TOKEN: статус %d, ожидался %d", rec.Code, http.StatusOK)
+	}
+}
