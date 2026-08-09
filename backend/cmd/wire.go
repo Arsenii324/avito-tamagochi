@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -74,7 +75,19 @@ func newRouter(pool *pgxpool.Pool) (*gin.Engine, error) {
 	}
 	cfg.Register(v1)
 
-	petSvc, err := pet.NewService(pet.NewRepo(pool), clock.Real{}, pet.DefaultEconomy, config.DefaultCurve, config.DefaultDailyCareXPCap)
+	// appClock — настоящие часы везде, кроме демо-стенда: там сервисам нужны
+	// одни общие управляемые часы (pkg/clock.Fixed), чтобы служебный сдвиг
+	// времени (registerDemoTimeDebug) двигал ОДНО и то же время, которое
+	// видят и питомец, и лидерборд/сводка — иначе сдвинутые вперёд часы
+	// питомца и настоящие часы лидерборда разошлись бы в одном демо.
+	var appClock clock.Clock = clock.Real{}
+	var demoClk *clock.Fixed
+	if demoModeEnabled() {
+		demoClk = clock.NewFixed(time.Now())
+		appClock = demoClk
+	}
+
+	petSvc, err := pet.NewService(pet.NewRepo(pool), appClock, pet.DefaultEconomy, config.DefaultCurve, config.DefaultDailyCareXPCap)
 	if err != nil {
 		return nil, fmt.Errorf("сборка сервиса pet: %w", err)
 	}
@@ -94,11 +107,18 @@ func newRouter(pool *pgxpool.Pool) (*gin.Engine, error) {
 	petHandler := pet.NewHandler(petSvc, wsh.NewHub(), clock.Real{})
 	petHandler.Register(v1)
 
-	socialSvc, err := social.NewService(social.NewRepo(pool), clock.Real{}, config.DefaultCurve)
+	socialSvc, err := social.NewService(social.NewRepo(pool), appClock, config.DefaultCurve)
 	if err != nil {
 		return nil, fmt.Errorf("сборка сервиса social: %w", err)
 	}
 	social.NewHandler(socialSvc).Register(v1)
+
+	// Пульт демо-стенда — вне apiPrefix и вне контракта, ровно как /healthz.
+	// Существует только вместе с demoClk: без APP_ENV=demo часы настоящие,
+	// двигать нечего.
+	if demoClk != nil {
+		registerDemoClockDebug(r, demoClk)
+	}
 
 	// /ws — своя группа, а не v1: контракт монтирует сокет вне /api/v1
 	// (docs/openapi.json → x-websocket.url). Group("") с пустым путём — это

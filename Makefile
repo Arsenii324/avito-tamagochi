@@ -56,13 +56,20 @@ gen:  ## регенерация типов из docs/openapi.json (Go + TS)
 migrate:  ## накатить миграции (goose — уже используется в feat/auth)
 	cd backend && goose -dir migrations postgres "$$DATABASE_URL" up
 
-seed:  ## демо-данные: стрик, порог уровня, готовая награда, лидерборд
+# Проводит действия ЧЕРЕЗ internal/pet.Service (детерминированные actionId,
+# идемпотентно) — не INSERT напрямую. Пока НЕ сеет: стрик (система не
+# построена) и награды (стоп-вопрос entitlement, см. docs/DECISIONS.md →
+# «Открытое») — честно ничего, не выдумка. Сеет: несколько питомцев с разной
+# историей ухода за несколько последних суток — есть чем показать
+# лидерборд (GET /leaderboard) и сводку дня (GET /summary/daily).
+seed:  ## демо-данные: несколько питомцев, история ухода на неделю, лидерборд
 	@test -d backend/cmd/seed || { echo "seed: cmd/seed ещё не написан (docs/DECISIONS.md → несделанная работа)"; exit 1; }
 	cd backend && go run ./cmd/seed
 
+# Работает только когда сервер поднят с APP_ENV=demo (docker-compose.yaml —
+# уже дефолт, см. `make up`): вне демо-режима часы настоящие, эндпоинта нет.
 clock:  ## сдвинуть часы демо-стенда: make clock HOURS=26
-	@echo "clock: эндпоинт /v1/_debug/clock ещё не написан (docs/DECISIONS.md → несделанная работа)" >&2
-	curl -fsS -XPOST localhost:8080/v1/_debug/clock -d '{"advanceHours":$(or $(HOURS),24)}'
+	curl -fsS -XPOST localhost:8080/debug/clock/advance -d '{"advanceHours":$(or $(HOURS),24)}'
 
 test:  ## быстрый прогон (то же, что Stop-хук)
 	cd backend && go test ./...

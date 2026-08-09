@@ -24,6 +24,8 @@
 | UI-библиотека | Chakra UI **v3** (выбрал фронт) | `"@chakra-ui/react": "^3"` в `frontend/package.json` |
 | Go | `1.25.0` | строка `go` в `backend/go.mod` |
 | Общая инфраструктура | `backend/pkg/`, не `internal/platform/` | каталог `backend/pkg/` |
+| Демо-данные | `make seed` — через `internal/pet.Service`, детерминированные `actionId`, идемпотентно | `backend/cmd/seed/main.go` |
+| Сдвиг часов демо-стенда | `make clock HOURS=N` → `POST /debug/clock/advance` | `backend/cmd/demo_clock.go` |
 
 ## Решено командой
 
@@ -116,6 +118,4 @@ sqlc (pgx хватает, а вторая кодогенерация на тре
 ## Не решение, а несделанная работа
 
 - Деплой на публичный URL
-- `make seed` и служебный сдвиг часов (`APP_ENV=demo`) — жюри смотрит десять минут и не
-  видит, как проходит время; сдвиг дёшев ровно потому, что время приходит параметром
-- README для защиты: ограничения MVP, ключевые решения (день 6, не сейчас)
+- README для защиты: ограничения MVP, ключевые решения (день 6 — см. `README.md` → «Для защиты»)
