@@ -4,8 +4,10 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	openapitypes "github.com/oapi-codegen/runtime/types"
 
 	"tamagochi/internal/api"
 	"tamagochi/internal/httpx"
@@ -27,6 +29,8 @@ func NewHandler(svc *Service) *Handler { return &Handler{svc: svc} }
 // Register вешает маршруты тега social на переданную группу.
 func (h *Handler) Register(r gin.IRoutes) {
 	r.GET("/leaderboard", h.leaderboard)
+	r.GET("/summary/daily", h.summaryDaily)
+	r.POST("/summary/daily/seen", h.summaryDailySeen)
 }
 
 // leaderboard отвечает на GET /leaderboard.
@@ -123,5 +127,138 @@ func toAPIPage(p Page) api.LeaderboardPage {
 		me := toAPIEntry(*p.Me)
 		out.Me = &me
 	}
+	return out
+}
+
+// --- Сводка дня ----------------------------------------------------------
+
+// summaryDaily отвечает на GET /summary/daily.
+func (h *Handler) summaryDaily(c *gin.Context) {
+	userID, ok := authctx.UserID(c.Request.Context())
+	if !ok {
+		httpx.Fail(c.Writer, c.Request, http.StatusUnauthorized, api.UNAUTHORIZED, "Нужен вход")
+		return
+	}
+
+	date, err := parseSummaryDate(c.Query("date"))
+	if err != nil {
+		httpx.Fail(c.Writer, c.Request, http.StatusUnprocessableEntity, api.VALIDATIONERROR, "date должен быть в формате YYYY-MM-DD")
+		return
+	}
+
+	summary, err := h.svc.Summary(c.Request.Context(), userID, date)
+	if err != nil {
+		httpx.Fail(c.Writer, c.Request, http.StatusInternalServerError, api.INTERNALERROR, "Внутренняя ошибка сервера")
+		return
+	}
+
+	httpx.OK(c.Writer, c.Request, http.StatusOK, toAPISummary(summary), "Сводка дня")
+}
+
+// summaryDailySeen отвечает на POST /summary/daily/seen.
+func (h *Handler) summaryDailySeen(c *gin.Context) {
+	userID, ok := authctx.UserID(c.Request.Context())
+	if !ok {
+		httpx.Fail(c.Writer, c.Request, http.StatusUnauthorized, api.UNAUTHORIZED, "Нужен вход")
+		return
+	}
+
+	// api.PostSummaryDailySeenJSONBody — сгенерированный тип тела запроса:
+	// его openapi_types.Date уже умеет разбирать "2026-08-09" через
+	// json.Unmarshal, переписывать этот разбор вручную незачем (AGENTS.md —
+	// once codegen wired, generated types win). Но сам сгенерированный тип не
+	// несёт тега binding:"required" (oapi-codegen его не проставляет для
+	// голых типов), поэтому Gin молча пропускает отсутствующее поле как
+	// нулевое время — IsZero проверяется отдельно, руками, иначе отсутствие
+	// date в теле тихо запишет "0001-01-01" вместо честной 422.
+	var body api.PostSummaryDailySeenJSONBody
+	if err := c.ShouldBindJSON(&body); err != nil || body.Date.IsZero() {
+		httpx.Fail(c.Writer, c.Request, http.StatusUnprocessableEntity, api.VALIDATIONERROR, "date обязателен и должен быть в формате YYYY-MM-DD")
+		return
+	}
+
+	if err := h.svc.MarkSeen(c.Request.Context(), userID, body.Date.Time); err != nil {
+		httpx.Fail(c.Writer, c.Request, http.StatusInternalServerError, api.INTERNALERROR, "Внутренняя ошибка сервера")
+		return
+	}
+
+	c.Status(http.StatusNoContent)
+}
+
+// parseSummaryDate разбирает query-параметр date контракта. Пустая строка —
+// не ошибка, это «дата не задана»: Service.Summary сам подставит сегодня по
+// своим часам. Bind — метод самого openapi_types.Date, написанный ровно под
+// разбор скалярного query-параметра (см. docstring в rutime/types/date.go).
+func parseSummaryDate(raw string) (*time.Time, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	var d openapitypes.Date
+	if err := d.Bind(raw); err != nil {
+		return nil, err
+	}
+	return &d.Time, nil
+}
+
+// toAPISummary переводит доменную Summary в тип контракта.
+//
+// Streak/Tomorrow/AiNote остаются nil намеренно: система стриков и
+// AI-заметки не построены (см. докстринг Summary в service.go) — контракт
+// помечает все три необязательными именно для случаев вроде этого, честное
+// отсутствие поля лучше выдуманного значения под его именем.
+func toAPISummary(s Summary) api.DailySummary {
+	date := openapitypes.Date{Time: s.Date}
+	shouldShow := s.ShouldShow
+	xpTotal := s.XPTotal
+	multiplier := float32(s.Multiplier)
+
+	breakdown := make([]struct {
+		Count *int    `json:"count,omitempty"`
+		Key   *string `json:"key,omitempty"`
+		Label *string `json:"label,omitempty"`
+		Xp    *int    `json:"xp,omitempty"`
+	}, 0, len(s.Breakdown))
+	for _, b := range s.Breakdown {
+		count, xp, key, label := b.Count, b.XP, b.Key, b.Label
+		breakdown = append(breakdown, struct {
+			Count *int    `json:"count,omitempty"`
+			Key   *string `json:"key,omitempty"`
+			Label *string `json:"label,omitempty"`
+			Xp    *int    `json:"xp,omitempty"`
+		}{Count: &count, Key: &key, Label: &label, Xp: &xp})
+	}
+
+	out := api.DailySummary{
+		Date:       &date,
+		ShouldShow: &shouldShow,
+		XpTotal:    &xpTotal,
+		Multiplier: &multiplier,
+		Breakdown:  &breakdown,
+	}
+
+	if s.HasPetSnapshot {
+		levelBefore, levelAfter := s.LevelBefore, s.LevelAfter
+		moodAfter := api.PetMood(s.MoodAfter)
+		statsAfter := api.Stats{Hunger: s.StatsAfter.Hunger, Joy: s.StatsAfter.Joy, Clean: s.StatsAfter.Clean, Energy: s.StatsAfter.Energy}
+		out.Pet = &struct {
+			LevelAfter  *int `json:"levelAfter,omitempty"`
+			LevelBefore *int `json:"levelBefore,omitempty"`
+
+			// MoodAfter Производная от МИНИМАЛЬНОГО показателя. Клиент её не вычисляет
+			MoodAfter *api.PetMood `json:"moodAfter,omitempty"`
+
+			// MoodBefore Производная от МИНИМАЛЬНОГО показателя. Клиент её не вычисляет
+			MoodBefore *api.PetMood `json:"moodBefore,omitempty"`
+
+			// StatsAfter Целые 0..100. Потолок жёсткий: 82 + 30 = 100, остаток сгорает
+			StatsAfter *api.Stats `json:"statsAfter,omitempty"`
+		}{
+			LevelBefore: &levelBefore,
+			LevelAfter:  &levelAfter,
+			MoodAfter:   &moodAfter,
+			StatsAfter:  &statsAfter,
+		}
+	}
+
 	return out
 }

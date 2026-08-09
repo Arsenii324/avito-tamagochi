@@ -29,6 +29,7 @@ import (
 	"github.com/google/uuid"
 
 	"tamagochi/internal/config"
+	"tamagochi/internal/pet"
 	"tamagochi/pkg/clock"
 )
 
@@ -263,4 +264,124 @@ func weekWindowStart(now time.Time) time.Time {
 	y, m, d := now.UTC().Date()
 	today := time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
 	return today.AddDate(0, 0, -(weeklyWindowDays - 1))
+}
+
+// --- Сводка дня ----------------------------------------------------------
+
+// actionLabels — человекочитаемые подписи действий ухода для разбивки дня.
+// Контракт не задаёт их формат (просто string), текст на русском — как весь
+// остальной пользовательский текст проекта (см. AGENTS.md → Language).
+var actionLabels = map[string]string{
+	string(pet.ActionFeed):  "Покормить",
+	string(pet.ActionPlay):  "Поиграть",
+	string(pet.ActionWash):  "Помыть",
+	string(pet.ActionSleep): "Уложить спать",
+	string(pet.ActionWake):  "Разбудить",
+}
+
+// BreakdownEntry — одна строка разбивки дня: сколько раз и на сколько опыта
+// принесло одно действие ухода.
+type BreakdownEntry struct {
+	Key   string
+	Label string
+	Count int
+	XP    int
+}
+
+// Summary — сводка суток, как её видит клиент. Урезанная часть контракта
+// (docs/openapi.json → DailySummary): стрик-система и AI-заметки не
+// построены (docs/DECISIONS.md, AGENTS.md → стоп-вопросы), поэтому
+// Multiplier честно всегда 1, а Streak/Tomorrow/AiNote в ответ вообще не
+// попадают — handler.go оставляет соответствующие поля nil, а не подсовывает
+// выдуманные данные под видом настоящих.
+type Summary struct {
+	Date        time.Time
+	ShouldShow  bool
+	XPTotal     int
+	Multiplier  float64
+	Breakdown   []BreakdownEntry
+	LevelBefore int
+	LevelAfter  int
+	// HasPetSnapshot — было ли за сутки хоть одно действие ухода: если нет,
+	// StatsAfter/MoodAfter нечем заполнить, контракт помечает pet как
+	// необязательное поле именно для этого случая.
+	HasPetSnapshot bool
+	StatsAfter     pet.Stats
+	MoodAfter      pet.Mood
+}
+
+// Summary возвращает сводку конкретных суток пользователя. date — уже
+// нормализованная календарная дата, полночь UTC (см. handler.go); nil
+// значит «сегодня», посчитанное по часам сервиса, — ровно тот же приём,
+// что pet.Actor.day с nil-локацией: пока аккаунтов и их таймзон нет, сутки
+// везде по UTC.
+func (s *Service) Summary(ctx context.Context, userID uuid.UUID, date *time.Time) (Summary, error) {
+	day := s.today()
+	if date != nil {
+		day = *date
+	}
+
+	hasPet, err := s.repo.HasPet(ctx, userID)
+	if err != nil {
+		return Summary{}, err
+	}
+	if !hasPet {
+		return Summary{Date: day}, nil
+	}
+
+	raw, err := s.repo.Day(ctx, userID, day)
+	if err != nil {
+		return Summary{}, err
+	}
+
+	before, err := config.LevelFor(raw.TotalXPBefore, s.curve)
+	if err != nil {
+		return Summary{}, fmt.Errorf("social: уровень до суток: %w", err)
+	}
+	after, err := config.LevelFor(raw.TotalXPAfter, s.curve)
+	if err != nil {
+		return Summary{}, fmt.Errorf("social: уровень после суток: %w", err)
+	}
+
+	out := Summary{
+		Date:        day,
+		ShouldShow:  raw.ShouldShow,
+		XPTotal:     raw.XPTotal,
+		Multiplier:  1, // честная единица: стрик-бонуса не существует
+		LevelBefore: before.Level,
+		LevelAfter:  after.Level,
+	}
+	out.Breakdown = make([]BreakdownEntry, 0, len(raw.Breakdown))
+	for _, b := range raw.Breakdown {
+		label, ok := actionLabels[b.Kind]
+		if !ok {
+			label = b.Kind
+		}
+		out.Breakdown = append(out.Breakdown, BreakdownEntry{Key: b.Kind, Label: label, Count: b.Count, XP: b.XP})
+	}
+
+	// StatsAfter/MoodAfter берутся из результата, который в момент действия
+	// уже посчитал internal/pet (та же самая View, что отдаёт /pet/act) — не
+	// пересчитываются заново: второй способ посчитать настроение — второе
+	// место, которое может разойтись с первым при следующей правке экономики.
+	if raw.LastAction != nil {
+		out.HasPetSnapshot = true
+		out.StatsAfter = raw.LastAction.Pet.Stats
+		out.MoodAfter = raw.LastAction.Pet.Mood
+	}
+
+	return out, nil
+}
+
+// MarkSeen отмечает сутки просмотренными. Тонкая обёртка над repo.go:
+// добавлена ради того же инварианта, что и у остальных методов сервиса —
+// handler.go не имеет права вызывать Repo напрямую (AGENTS.md → Never).
+func (s *Service) MarkSeen(ctx context.Context, userID uuid.UUID, date time.Time) error {
+	return s.repo.MarkSeen(ctx, userID, date)
+}
+
+// today — сегодняшняя календарная дата по часам сервиса, полночь UTC.
+func (s *Service) today() time.Time {
+	y, m, d := s.clk.Now().UTC().Date()
+	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
 }

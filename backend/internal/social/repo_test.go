@@ -9,6 +9,7 @@ package social_test
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"tamagochi/internal/config"
+	"tamagochi/internal/pet"
 	"tamagochi/internal/social"
 	"tamagochi/pkg/clock"
 	"tamagochi/pkg/pgtest"
@@ -70,6 +72,225 @@ func (f *seedFixture) seedXP(t *testing.T, userID uuid.UUID, day time.Time, xp i
 func day(offsetDays int) time.Time {
 	y, m, d := base.UTC().Date()
 	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC).AddDate(0, 0, offsetDays)
+}
+
+// ptr — адрес значения там, где сама функция (day(0)) его не даёт.
+func ptr(t time.Time) *time.Time { return &t }
+
+// seedAction сидирует запись журнала с конкретным kind/xp/created_at и
+// произвольным result — через pet.ActResult, как это делает
+// internal/pet.Service.Act, а не сырым JSON: см. докстринг repo.go → Day
+// про то, почему регистр ключей внутри result важен.
+func (f *seedFixture) seedAction(t *testing.T, userID uuid.UUID, kind string, xp int, day, createdAt time.Time, result pet.ActResult) {
+	t.Helper()
+	raw, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("сериализация результата действия: %v", err)
+	}
+	_, err = f.pool.Exec(context.Background(), `
+		INSERT INTO pet_action_log (user_id, action_id, kind, xp_granted, day, result, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		userID, uuid.New(), kind, xp, day, raw, createdAt,
+	)
+	if err != nil {
+		t.Fatalf("сидирование действия: %v", err)
+	}
+}
+
+// --- Сводка дня ------------------------------------------------------
+
+// Пустые сутки — ShouldShow=false, а не пустая сводка со всеми нулями,
+// выглядящая как «уход был, но нулевой»: контракт явно отдаёт решение
+// показывать сводку серверу.
+func TestSummaryDayWithNoActionsShouldNotShow(t *testing.T) {
+	f := newSeedFixture(t)
+	ctx := context.Background()
+	userID := uuid.New()
+	f.seedPet(t, userID, "Тихоня", 0)
+
+	got, err := f.svc.Summary(ctx, userID, ptr(day(0)))
+	if err != nil {
+		t.Fatalf("Summary: %v", err)
+	}
+	if got.ShouldShow {
+		t.Error("ShouldShow = true без единого действия за сутки")
+	}
+	if got.HasPetSnapshot {
+		t.Error("HasPetSnapshot = true без единого действия за сутки — нечем его подтвердить")
+	}
+	if got.XPTotal != 0 {
+		t.Errorf("XPTotal = %d, ожидался 0", got.XPTotal)
+	}
+	if got.LevelBefore != got.LevelAfter {
+		t.Errorf("LevelBefore=%d != LevelAfter=%d — без опыта за сутки уровень не должен меняться", got.LevelBefore, got.LevelAfter)
+	}
+}
+
+// Разбивка группируется по kind: два одинаковых действия — одна строка с
+// count=2, а не две строки. XPTotal — сумма по всем строкам.
+func TestSummaryDayAggregatesBreakdownByKind(t *testing.T) {
+	f := newSeedFixture(t)
+	ctx := context.Background()
+	userID := uuid.New()
+	f.seedPet(t, userID, "Едок", 0)
+
+	f.seedAction(t, userID, "feed", 10, day(0), base, pet.ActResult{})
+	f.seedAction(t, userID, "feed", 10, day(0), base.Add(time.Minute), pet.ActResult{})
+	f.seedAction(t, userID, "play", 12, day(0), base.Add(2*time.Minute), pet.ActResult{})
+
+	got, err := f.svc.Summary(ctx, userID, ptr(day(0)))
+	if err != nil {
+		t.Fatalf("Summary: %v", err)
+	}
+	if !got.ShouldShow {
+		t.Fatal("ShouldShow = false при трёх действиях за сутки")
+	}
+	if got.XPTotal != 32 {
+		t.Errorf("XPTotal = %d, ожидалось 32", got.XPTotal)
+	}
+
+	byKind := map[string]social.BreakdownEntry{}
+	for _, b := range got.Breakdown {
+		byKind[b.Key] = b
+	}
+	if got.Breakdown != nil && len(byKind) != len(got.Breakdown) {
+		t.Fatalf("разбивка содержит дублирующиеся kind: %+v", got.Breakdown)
+	}
+	if byKind["feed"].Count != 2 || byKind["feed"].XP != 20 {
+		t.Errorf("feed = %+v, ожидалось count=2 xp=20", byKind["feed"])
+	}
+	if byKind["play"].Count != 1 || byKind["play"].XP != 12 {
+		t.Errorf("play = %+v, ожидалось count=1 xp=12", byKind["play"])
+	}
+	if byKind["feed"].Label != "Покормить" {
+		t.Errorf("feed.Label = %q, ожидалось «Покормить»", byKind["feed"].Label)
+	}
+}
+
+// levelBefore/levelAfter — из СУММАРНОГО опыта строго до суток и включительно
+// по них, посчитанного той же config.LevelFor, что и everywhere else в
+// проекте — не хардкод и не второй способ посчитать то же самое.
+func TestSummaryDayLevelBeforeAfterFromCumulativeXP(t *testing.T) {
+	f := newSeedFixture(t)
+	ctx := context.Background()
+	userID := uuid.New()
+	f.seedPet(t, userID, "Растущий", 0)
+
+	f.seedAction(t, userID, "feed", 100, day(-1), base.AddDate(0, 0, -1), pet.ActResult{})
+	f.seedAction(t, userID, "feed", 130, day(0), base, pet.ActResult{})
+
+	got, err := f.svc.Summary(ctx, userID, ptr(day(0)))
+	if err != nil {
+		t.Fatalf("Summary: %v", err)
+	}
+
+	wantBefore, err := config.LevelFor(100, config.DefaultCurve)
+	if err != nil {
+		t.Fatalf("LevelFor(100): %v", err)
+	}
+	wantAfter, err := config.LevelFor(230, config.DefaultCurve)
+	if err != nil {
+		t.Fatalf("LevelFor(230): %v", err)
+	}
+	if got.LevelBefore != wantBefore.Level {
+		t.Errorf("LevelBefore = %d, ожидалось %d (по опыту 100 СТРОГО до суток)", got.LevelBefore, wantBefore.Level)
+	}
+	if got.LevelAfter != wantAfter.Level {
+		t.Errorf("LevelAfter = %d, ожидалось %d (по опыту 230 включительно по сутки)", got.LevelAfter, wantAfter.Level)
+	}
+}
+
+// StatsAfter/MoodAfter берутся из ПОСЛЕДНЕГО по времени действия суток, а не
+// из первого и не из случайного порядка выборки.
+func TestSummaryDayUsesLastActionOfDayForStatsAndMood(t *testing.T) {
+	f := newSeedFixture(t)
+	ctx := context.Background()
+	userID := uuid.New()
+	f.seedPet(t, userID, "Смотрящий", 0)
+
+	early := pet.ActResult{Pet: pet.View{Stats: pet.Stats{Hunger: 40, Joy: 40, Clean: 40, Energy: 40}, Mood: pet.MoodSad}}
+	late := pet.ActResult{Pet: pet.View{Stats: pet.Stats{Hunger: 90, Joy: 95, Clean: 100, Energy: 85}, Mood: pet.MoodHappy}}
+
+	f.seedAction(t, userID, "feed", 10, day(0), base, early)
+	f.seedAction(t, userID, "wash", 10, day(0), base.Add(time.Hour), late)
+
+	got, err := f.svc.Summary(ctx, userID, ptr(day(0)))
+	if err != nil {
+		t.Fatalf("Summary: %v", err)
+	}
+	if !got.HasPetSnapshot {
+		t.Fatal("HasPetSnapshot = false при двух действиях за сутки")
+	}
+	if got.StatsAfter != late.Pet.Stats {
+		t.Errorf("StatsAfter = %+v, ожидалось %+v (последнее по времени действие)", got.StatsAfter, late.Pet.Stats)
+	}
+	if got.MoodAfter != pet.MoodHappy {
+		t.Errorf("MoodAfter = %q, ожидалось %q — из последнего действия, не первого", got.MoodAfter, pet.MoodHappy)
+	}
+}
+
+// Питомца никогда не было — сводка пустая, но это не ошибка: пользователю
+// без питомца всё ещё должна открываться страница сводки.
+func TestSummaryWithoutPetIsEmptyNotError(t *testing.T) {
+	f := newSeedFixture(t)
+	ctx := context.Background()
+
+	got, err := f.svc.Summary(ctx, uuid.New(), ptr(day(0)))
+	if err != nil {
+		t.Fatalf("Summary: %v", err)
+	}
+	if got.ShouldShow || got.HasPetSnapshot {
+		t.Errorf("ShouldShow/HasPetSnapshot должны быть false без питомца: %+v", got)
+	}
+}
+
+// date=nil — «сегодня» по часам сервиса, а не «за всё время»: действие
+// завтрашним днём не должно попасть в сегодняшнюю сводку.
+func TestSummaryNilDateDefaultsToToday(t *testing.T) {
+	f := newSeedFixture(t) // часы фиксированы на base
+	ctx := context.Background()
+	userID := uuid.New()
+	f.seedPet(t, userID, "Сегодняшний", 0)
+	f.seedAction(t, userID, "feed", 10, day(0), base, pet.ActResult{})
+	f.seedAction(t, userID, "feed", 999, day(1), base.AddDate(0, 0, 1), pet.ActResult{})
+
+	got, err := f.svc.Summary(ctx, userID, nil)
+	if err != nil {
+		t.Fatalf("Summary: %v", err)
+	}
+	if got.XPTotal != 10 {
+		t.Errorf("XPTotal = %d, ожидалось 10 — nil-дата должна взять «сегодня» по часам сервиса, не всё подряд", got.XPTotal)
+	}
+	if !got.Date.Equal(day(0)) {
+		t.Errorf("Date = %v, ожидалось %v", got.Date, day(0))
+	}
+}
+
+// MarkSeen — идемпотентна: повторная отметка тех же суток не должна ни
+// упасть, ни задвоить строку (контракт отвечает 204 в обоих случаях).
+func TestMarkSeenIsIdempotent(t *testing.T) {
+	f := newSeedFixture(t)
+	ctx := context.Background()
+	userID := uuid.New()
+	f.seedPet(t, userID, "Отмечающий", 0)
+
+	if err := f.svc.MarkSeen(ctx, userID, day(0)); err != nil {
+		t.Fatalf("первая отметка: %v", err)
+	}
+	if err := f.svc.MarkSeen(ctx, userID, day(0)); err != nil {
+		t.Fatalf("повторная отметка того же дня: %v", err)
+	}
+
+	var seenCount int
+	if err := f.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM daily_summary_views WHERE user_id = $1 AND date = $2`,
+		userID, day(0),
+	).Scan(&seenCount); err != nil {
+		t.Fatalf("проверка отметки: %v", err)
+	}
+	if seenCount != 1 {
+		t.Errorf("daily_summary_views содержит %d строк, ожидалась 1 — повтор обязан быть идемпотентным, не задваивать", seenCount)
+	}
 }
 
 // Базовый порядок: больше опыта за неделю — выше в списке.

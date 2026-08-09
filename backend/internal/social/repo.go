@@ -2,6 +2,7 @@ package social
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -9,6 +10,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"tamagochi/internal/pet"
 )
 
 // Слой данных: единственное место с SQL. Никаких доменных решений — те живут
@@ -112,4 +115,123 @@ func (r *Repo) ByUser(ctx context.Context, since time.Time, userID uuid.UUID) (R
 		WHERE user_id = $2`,
 		since, userID,
 	))
+}
+
+// --- Сводка дня --------------------------------------------------------
+
+// BreakdownRow — сколько раз и на сколько опыта сделано одно действие
+// за сутки.
+type BreakdownRow struct {
+	Kind  string
+	Count int
+	XP    int
+}
+
+// DaySummary — сырые данные для одной сводки: то, что можно вычислить
+// из pet_action_log и pets, без домена summary (тот собирает service.go).
+type DaySummary struct {
+	ShouldShow    bool
+	XPTotal       int
+	Breakdown     []BreakdownRow
+	TotalXPBefore int // сумма опыта СТРОГО до этих суток — для levelBefore
+	TotalXPAfter  int // сумма опыта включительно по эти сутки — для levelAfter
+	// LastAction — результат последнего действия ухода за эти сутки, откуда
+	// берутся statsAfter/moodAfter. nil, если в этот день не было действий.
+	LastAction *pet.ActResult
+}
+
+// Day возвращает данные сводки за конкретные сутки конкретного пользователя.
+//
+// day — уже посчитанная календарная дата (UTC, как и остальной пакет — см.
+// weekWindowStart), не time.Time с произвольным временем суток: сравнение
+// в SQL идёт с типом DATE.
+func (r *Repo) Day(ctx context.Context, userID uuid.UUID, day time.Time) (DaySummary, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT kind, COUNT(*), COALESCE(SUM(xp_granted), 0)
+		FROM pet_action_log
+		WHERE user_id = $1 AND day = $2
+		GROUP BY kind`,
+		userID, day,
+	)
+	if err != nil {
+		return DaySummary{}, fmt.Errorf("social: разбивка дня: %w", err)
+	}
+	var out DaySummary
+	for rows.Next() {
+		var br BreakdownRow
+		if scanErr := rows.Scan(&br.Kind, &br.Count, &br.XP); scanErr != nil {
+			rows.Close()
+			return DaySummary{}, fmt.Errorf("social: чтение разбивки дня: %w", scanErr)
+		}
+		out.Breakdown = append(out.Breakdown, br)
+		out.XPTotal += br.XP
+	}
+	if rowsErr := rows.Err(); rowsErr != nil {
+		rows.Close()
+		return DaySummary{}, fmt.Errorf("social: обход разбивки дня: %w", rowsErr)
+	}
+	rows.Close()
+	out.ShouldShow = len(out.Breakdown) > 0
+
+	if beforeErr := r.pool.QueryRow(ctx, `
+		SELECT COALESCE(SUM(xp_granted), 0) FROM pet_action_log WHERE user_id = $1 AND day < $2`,
+		userID, day,
+	).Scan(&out.TotalXPBefore); beforeErr != nil {
+		return DaySummary{}, fmt.Errorf("social: опыт до суток: %w", beforeErr)
+	}
+	out.TotalXPAfter = out.TotalXPBefore + out.XPTotal
+
+	if out.ShouldShow {
+		var raw []byte
+		lastErr := r.pool.QueryRow(ctx, `
+			SELECT result FROM pet_action_log
+			WHERE user_id = $1 AND day = $2
+			ORDER BY created_at DESC
+			LIMIT 1`,
+			userID, day,
+		).Scan(&raw)
+		if lastErr != nil {
+			return DaySummary{}, fmt.Errorf("social: результат последнего действия: %w", lastErr)
+		}
+		// pet.ActResult, не самодельная структура: pet_action_log.result —
+		// это json.Marshal(pet.ActResult{...}) из internal/pet/service.go,
+		// и pet.Stats внутри него БЕЗ json-тегов (сериализуется полями Go —
+		// Hunger, не hunger). Раскодировать в тот же тип, которым это было
+		// закодировано, — единственный способ не гадать регистр ключей,
+		// который здесь уже один раз молча разошёлся (см. internal/pet/ws.go
+		// → StatsPayload и её докстринг).
+		var last pet.ActResult
+		if unmarshalErr := json.Unmarshal(raw, &last); unmarshalErr != nil {
+			return DaySummary{}, fmt.Errorf("social: разбор результата последнего действия: %w", unmarshalErr)
+		}
+		out.LastAction = &last
+	}
+
+	return out, nil
+}
+
+// HasPet сообщает, есть ли у пользователя питомец вообще — сводке о нём
+// нечего показать, если его никогда не было.
+func (r *Repo) HasPet(ctx context.Context, userID uuid.UUID) (bool, error) {
+	var exists bool
+	err := r.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pets WHERE user_id = $1)`, userID).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("social: проверка питомца: %w", err)
+	}
+	return exists, nil
+}
+
+// MarkSeen отмечает сутки просмотренными. Идемпотентна: повторная отметка
+// того же дня — не ошибка (контракт отвечает 204 в обоих случаях).
+func (r *Repo) MarkSeen(ctx context.Context, userID uuid.UUID, date time.Time) error {
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO daily_summary_views (user_id, date)
+		VALUES ($1, $2)
+		ON CONFLICT (user_id, date) DO NOTHING`,
+		userID, date,
+	)
+	if err != nil {
+		return fmt.Errorf("social: отметка сводки просмотренной: %w", err)
+	}
+	return nil
 }
