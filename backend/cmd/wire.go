@@ -11,6 +11,7 @@ import (
 	"tamagochi/internal/config"
 	"tamagochi/internal/httpx"
 	"tamagochi/internal/pet"
+	"tamagochi/internal/social"
 	"tamagochi/pkg/clock"
 	"tamagochi/pkg/wsh"
 )
@@ -92,6 +93,12 @@ func newRouter(pool *pgxpool.Pool) (*gin.Engine, error) {
 	}
 	petHandler := pet.NewHandler(petSvc, wsh.NewHub(), clock.Real{})
 	petHandler.Register(v1)
+
+	socialSvc, err := social.NewService(social.NewRepo(pool), clock.Real{}, config.DefaultCurve)
+	if err != nil {
+		return nil, fmt.Errorf("сборка сервиса social: %w", err)
+	}
+	social.NewHandler(socialSvc).Register(v1)
 
 	// /ws — своя группа, а не v1: контракт монтирует сокет вне /api/v1
 	// (docs/openapi.json → x-websocket.url). Group("") с пустым путём — это
