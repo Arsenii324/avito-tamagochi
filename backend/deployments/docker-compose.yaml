@@ -40,6 +40,21 @@ services:
     networks:
       - app_net
 
+  # Кейс требует «приложение поднимается через docker-compose» дословно —
+  # не только бэкенд. nginx отдаёт собранный статический бандл и проксирует
+  # /api, /debug, /ws на server (frontend/build/package/nginx.conf) — фронту
+  # незачем знать, что бэкенд живёт на другом порту/хосте.
+  frontend:
+    build:
+      context: ../../
+      dockerfile: frontend/build/package/Dockerfile
+    ports:
+      - "3000:80"
+    depends_on:
+      - server
+    networks:
+      - app_net
+
 volumes:
   pgdata:
 
