@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -165,5 +166,33 @@ func newAdvisorProvider() advisor.Provider {
 	}
 	httpClient := advisor.NewHTTPClient(10 * time.Second)
 	gigachat := advisor.NewGigaChatProvider(httpClient, authKey, clock.Real{})
-	return advisor.NewFallbackProvider(gigachat, advisor.TemplateProvider{})
+	budgeted := advisor.NewBudgetProvider(gigachat, advisorCallBudget())
+	return advisor.NewFallbackProvider(budgeted, advisor.TemplateProvider{})
+}
+
+// defaultAdvisorCallBudget — потолок обращений к модели за жизнь процесса,
+// когда GIGACHAT_MAX_CALLS не задан.
+//
+// Число намеренно небольшое: /summary/daily зовёт модель на КАЖДЫЙ запрос,
+// кэша ответов нет, а демо-стенд открыт в интернет — без потолка квоту ключа
+// тратит любой, кто нашёл URL. Сотни хватает, чтобы показать живую модель на
+// защите, и мало, чтобы это чего-то стоило, если по адресу пройдётся краулер.
+const defaultAdvisorCallBudget = 100
+
+// advisorCallBudget читает GIGACHAT_MAX_CALLS.
+//
+// Непарсящееся или отрицательное значение — это опечатка в конфиге, а не
+// просьба «без лимита»: берём дефолт, потому что молча снять потолок опаснее,
+// чем молча его поставить. Явный 0 уважаем — «ключ задан, но модель не
+// звонить»: так расход выключается, не убирая ключ из окружения.
+func advisorCallBudget() int {
+	raw, ok := os.LookupEnv("GIGACHAT_MAX_CALLS")
+	if !ok {
+		return defaultAdvisorCallBudget
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return defaultAdvisorCallBudget
+	}
+	return n
 }
