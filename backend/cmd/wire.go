@@ -12,6 +12,7 @@ import (
 	"tamagochi/internal/config"
 	"tamagochi/internal/httpx"
 	"tamagochi/internal/pet"
+	"tamagochi/internal/rewards"
 	"tamagochi/internal/social"
 	"tamagochi/pkg/clock"
 	"tamagochi/pkg/wsh"
@@ -112,6 +113,12 @@ func newRouter(pool *pgxpool.Pool) (*gin.Engine, error) {
 		return nil, fmt.Errorf("сборка сервиса social: %w", err)
 	}
 	social.NewHandler(socialSvc).Register(v1)
+
+	rewardsSvc, err := rewards.NewService(rewards.NewRepo(pool), rewards.DefaultCatalog, config.DefaultCurve)
+	if err != nil {
+		return nil, fmt.Errorf("сборка сервиса rewards: %w", err)
+	}
+	rewards.NewHandler(rewardsSvc).Register(v1)
 
 	// Пульт демо-стенда — вне apiPrefix и вне контракта, ровно как /healthz.
 	// Существует только вместе с demoClk: без APP_ENV=demo часы настоящие,
