@@ -1,6 +1,7 @@
 import { Container, Stack } from '@chakra-ui/react';
 import { PetPanel } from '@/features/pet/PetPanel';
 import { LeaderboardPanel } from '@/features/leaderboard/LeaderboardPanel';
+import { RewardsPanel } from '@/features/rewards/RewardsPanel';
 import { DailySummaryModal } from '@/features/summary/DailySummaryModal';
 import { DemoClockPanel } from '@/features/demo-clock/DemoClockPanel';
 
@@ -14,6 +15,7 @@ export default function AppRouter() {
       <Stack gap="6">
         <DemoClockPanel />
         <PetPanel />
+        <RewardsPanel />
         <LeaderboardPanel />
       </Stack>
       <DailySummaryModal />

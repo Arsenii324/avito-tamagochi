@@ -22,7 +22,7 @@ export function DemoClockPanel() {
         // Сдвиг часов не бьёт по /pet/actions — decay пересчитывается лениво
         // при следующем чтении (internal/pet), поэтому карточку нужно
         // перечитать самим, WS-пуш тут не сработает.
-        dispatch(petApi.util.invalidateTags(['Pet', 'DailySummary', 'Leaderboard']));
+        dispatch(petApi.util.invalidateTags(['Pet', 'DailySummary', 'Leaderboard', 'Rewards']));
       })
       .catch(() => undefined);
   };

@@ -57,6 +57,6 @@ const envelopeBaseQuery: BaseQueryFn<
 export const baseApi = createApi({
   reducerPath: 'api',
   baseQuery: envelopeBaseQuery,
-  tagTypes: ['Pet', 'Leaderboard', 'DailySummary'],
+  tagTypes: ['Pet', 'Leaderboard', 'DailySummary', 'Rewards'],
   endpoints: () => ({}),
 });

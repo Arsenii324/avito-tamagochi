@@ -29,7 +29,9 @@ export function useLiveUpdates(): void {
       socket = new WebSocket(`${protocol}://${window.location.host}/ws`);
 
       socket.onmessage = () => {
-        dispatch(petApi.util.invalidateTags(['Pet']));
+        // Rewards тоже: xp.gained/level.up могли открыть новую награду —
+        // тот же довод, что в features/pet/api.ts → act.
+        dispatch(petApi.util.invalidateTags(['Pet', 'Rewards']));
       };
       socket.onclose = () => {
         if (stopped) return;
