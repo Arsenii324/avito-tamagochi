@@ -16,8 +16,10 @@ export function newUuid(): string {
   crypto.getRandomValues(bytes);
 
   // Версия (4) и вариант (RFC 4122) — те же биты, что проставил бы randomUUID.
-  bytes[6] = (bytes[6] & 0x0f) | 0x40;
-  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  // `?? 0` здесь не защита от дыр в массиве (их нет, длина фиксированная 16),
+  // а требование noUncheckedIndexedAccess: по индексу тип всегда `| undefined`.
+  bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x40;
+  bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80;
 
   const hex: string[] = [];
   for (const byte of bytes) {

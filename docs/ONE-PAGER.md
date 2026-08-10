@@ -2,7 +2,7 @@
 
 Хакатон «Лаборатория кода», кейс 1 «Авито Тамагочи». Команда: Казбек Сабанаев,
 Кирилл Беляев, Фёдор Лазарев, Арсений Вараксин.
-Репозиторий: <https://github.com/KazikS/avito-tamagochi>
+Репозиторий: <https://github.com/KazikS/avito-tamagochi/tree/claude/case-repo-analysis-2mum02>
 
 ## Проблема
 
