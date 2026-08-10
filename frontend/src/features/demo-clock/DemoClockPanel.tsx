@@ -39,7 +39,7 @@ export function DemoClockPanel() {
               +1 час
             </Button>
             <Button size="xs" onClick={() => handleAdvance(24)} loading={isLoading}>
-              +1 сутки
+              +24 часа
             </Button>
           </HStack>
         </HStack>

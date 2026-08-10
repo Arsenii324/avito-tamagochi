@@ -40,7 +40,7 @@ export function CreatePetForm() {
     <Card.Root maxW="md" mx="auto">
       <Card.Header>
         <Heading size="md">Заведи питомца</Heading>
-        <Text color="fg.muted">Пресет и имя можно выбрать один раз — питомец на аккаунт один.</Text>
+        <Text color="fg.muted">Пресет и имя выбираются один раз — питомец на аккаунт один.</Text>
       </Card.Header>
       <Card.Body>
         <form onSubmit={handleSubmit}>

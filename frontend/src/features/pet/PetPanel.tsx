@@ -25,7 +25,7 @@ const STAT_LABELS: Record<keyof Stats, string> = {
 const MOOD_LABELS: Record<PetMood, string> = {
   radiant: 'Сияет',
   happy: 'Доволен',
-  neutral: 'Обычное',
+  neutral: 'Спокоен',
   sad: 'Грустит',
   sick: 'Болеет',
   sleeping: 'Спит',

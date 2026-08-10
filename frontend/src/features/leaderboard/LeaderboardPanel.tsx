@@ -26,7 +26,7 @@ export function LeaderboardPanel() {
               </Stack>
             ))}
             {(data.items ?? []).length === 0 && (
-              <Text color="fg.muted">Пока никто не набрал опыт за неделю</Text>
+              <Text color="fg.muted">Пока никто не набрал опыта за неделю</Text>
             )}
             {data.me && !(data.items ?? []).some((entry) => entry.isMe) && (
               <Stack
