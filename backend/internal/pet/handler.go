@@ -84,6 +84,17 @@ func (h *Handler) create(c *gin.Context) {
 		return
 	}
 
+	// ShouldBindJSON проверяет типы и required, но не enum: presetId — строка,
+	// и в неё до сих пор проходило любое значение (проверено живьём:
+	// presetId=notareal возвращал 200). Такой питомец потом ломает фронт,
+	// которому нечем его нарисовать, и расходится с контрактом, где PresetId
+	// — enum green|blue|purple. Valid() у сгенерированного типа для этого и
+	// есть, его просто никто не звал.
+	if !body.PresetId.Valid() {
+		httpx.Fail(c.Writer, c.Request, http.StatusUnprocessableEntity, api.VALIDATIONERROR, "Неизвестный пресет питомца")
+		return
+	}
+
 	name := "Ави"
 	if body.Name != nil && *body.Name != "" {
 		name = *body.Name

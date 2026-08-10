@@ -133,8 +133,14 @@ interface PetAvatarProps {
 }
 
 export function PetAvatar({ presetId, mood, stage = 1, size = 132 }: PetAvatarProps) {
-  const colors = PRESET_COLORS[presetId];
-  const face = FACES[mood];
+  // `?? PRESET_COLORS.green` — не перестраховка. По контракту presetId это
+  // enum green|blue|purple, но база пережила запросы, где лежало другое
+  // значение, и на таком питомце `PRESET_COLORS[presetId]` == undefined:
+  // дальше `colors.earL` бросает TypeError, React снимает всё дерево, и
+  // пользователь видит пустую страницу вместо приложения. Аватар — не то
+  // место, где стоит ронять весь экран из-за неизвестной строки.
+  const colors = PRESET_COLORS[presetId] ?? PRESET_COLORS.green;
+  const face = FACES[mood] ?? FACES.neutral;
   // Стадия приходит с бэкенда и по контракту всегда 1..4, но приводим сами:
   // отрисовка не то место, где стоит падать из-за неожиданного числа.
   const grow = STAGE_EAR_GROWTH[stage] ?? 0;
