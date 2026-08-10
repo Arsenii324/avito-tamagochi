@@ -801,7 +801,7 @@ export interface paths {
         };
         /**
          * Награды
-         * @description promoCode ОТСУТСТВУЕТ, пока status не claimed или used. До получения фронт рисует маску. Иначе коды собираются скрейпингом.
+         * @description Энтайтлмент, не промокод (решение 10.08, docs/DECISIONS.md): награда — право, привязанное к user_id через reward_grants, коду на экране взяться неоткуда.
          *
          *     conditionLabel и etaDays считает сервер: фронт не склеивает фразы из чисел, иначе смена экономики потребует правки клиента.
          */
@@ -886,9 +886,9 @@ export interface paths {
         put?: never;
         /**
          * Забрать награду
-         * @description Идемпотентно. Повтор с ТЕМ ЖЕ Idempotency-Key возвращает 200 и тот же промокод.
+         * @description Идемпотентно. Повтор с ТЕМ ЖЕ Idempotency-Key возвращает 200 и ту же награду (status уже claimed или used — грант происходит не дважды).
          *
-         *     При другом ключе по уже полученной награде возвращается 409 REWARD_ALREADY_CLAIMED, но в data лежит ТОТ ЖЕ промокод — фронт открывает шит с кодом, а не показывает ошибку.
+         *     При другом ключе по уже полученной награде возвращается 409 REWARD_ALREADY_CLAIMED, в data — та же награда, без выдумывания второго гранта — фронт открывает тот же экран, а не показывает ошибку.
          *
          *     Если tier=cosmetic, сервер сразу выдаёт предмет и шлёт по сокету cosmetic.granted.
          */
@@ -896,7 +896,7 @@ export interface paths {
             parameters: {
                 query?: never;
                 header: {
-                    /** @description Обязателен: ретрай при плохой сети не должен выдать второй промокод. */
+                    /** @description Обязателен: ретрай при плохой сети не должен выдать второй грант награды. */
                     "Idempotency-Key": components["parameters"]["IdempotencyKeyRequired"];
                 };
                 path: {
@@ -907,16 +907,7 @@ export interface paths {
             requestBody?: never;
             responses: {
                 200: components["responses"]["RewardOk"];
-                /** @description REWARD_NOT_ELIGIBLE — условие не выполнено */
-                403: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ErrorEnvelope"];
-                    };
-                };
-                /** @description REWARD_ALREADY_CLAIMED. В data — та же награда с промокодом */
+                /** @description REWARD_NOT_ELIGIBLE (условие не выполнено) или REWARD_ALREADY_CLAIMED (в data — та же награда). Оба — состояние, не права доступа, поэтому не 403 */
                 409: {
                     headers: {
                         [name: string]: unknown;
@@ -954,8 +945,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Лог перехода «Применить на Авито»
-         * @description Метрика конверсии. Реальное погашение происходит на стороне Авито, статус переходит в used отдельным серверным событием.
+         * Применить награду
+         * @description В полном продукте — лог перехода «Применить на Авито», статус переходит в used отдельным серверным событием после реального погашения на стороне Авито. В этом MVP такого события нет неоткуда взяться (нет интеграции с настоящим Авито) — статус переходит в used сразу, синхронно; это явное упрощение MVP, а не тихая недоделка (docs/DECISIONS.md → 10.08).
          */
         post: {
             parameters: {
@@ -968,12 +959,15 @@ export interface paths {
             };
             requestBody?: never;
             responses: {
-                /** @description Записано */
-                204: {
+                200: components["responses"]["RewardOk"];
+                /** @description REWARD_NOT_CLAIMED — награду сначала нужно забрать */
+                409: {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content?: never;
+                    content: {
+                        "application/json": components["schemas"]["ErrorEnvelope"];
+                    };
                 };
             };
         };
@@ -1229,7 +1223,7 @@ export interface components {
          * @description Машинный код. Фронт ветвится ТОЛЬКО по нему: message перепишут при вычитке текстов, и клиент молча сломается.
          * @enum {string}
          */
-        ErrorCode: "VALIDATION_ERROR" | "UNAUTHORIZED" | "TOKEN_EXPIRED" | "NOT_FOUND" | "PET_ALREADY_EXISTS" | "PET_IS_SLEEPING" | "ACTION_LIMIT_REACHED" | "ACTION_RATE_LIMITED" | "EVENT_REJECTED" | "REWARD_NOT_ELIGIBLE" | "REWARD_ALREADY_CLAIMED" | "REWARD_EXPIRED" | "COSMETIC_NOT_OWNED" | "INTERNAL_ERROR";
+        ErrorCode: "VALIDATION_ERROR" | "UNAUTHORIZED" | "TOKEN_EXPIRED" | "NOT_FOUND" | "PET_ALREADY_EXISTS" | "PET_IS_SLEEPING" | "ACTION_LIMIT_REACHED" | "ACTION_RATE_LIMITED" | "EVENT_REJECTED" | "REWARD_NOT_ELIGIBLE" | "REWARD_ALREADY_CLAIMED" | "REWARD_EXPIRED" | "REWARD_NOT_CLAIMED" | "COSMETIC_NOT_OWNED" | "INTERNAL_ERROR";
         Tokens: {
             accessToken: string;
             refreshToken: string;
@@ -1483,12 +1477,13 @@ export interface components {
             obtainedAt?: string;
         };
         /**
-         * @description cosmetic — себестоимость 0 · soft — бонусы кошелька, мелкие скидки · premium — платные услуги Авито, только с 10 уровня и вехи 100
+         * @description cosmetic — себестоимость 0, выдаётся напрямую · soft — бонусы кошелька, мелкие скидки · premium — платные услуги Авито, только с 10 уровня и вехи 100-дневного стрика. premium сегодня не встречается ни в одной награде каталога: вехи 100 без стрик-системы не существует, а выдумывать недостижимую награду нечестнее, чем не показывать её вовсе (docs/DECISIONS.md → 10.08)
          * @enum {string}
          */
         RewardTier: "cosmetic" | "soft" | "premium";
         /** @enum {string} */
         RewardStatus: "locked" | "available" | "claimed" | "used" | "expired";
+        /** @description Энтайтлмент, не промокод (docs/DECISIONS.md → 10.08): право на бонус привязано к user_id в reward_grants, кода, который можно переслать, в ответе нет вообще. */
         Reward: {
             id: string;
             tier: components["schemas"]["RewardTier"];
@@ -1506,20 +1501,18 @@ export interface components {
                 /** @enum {string} */
                 unit: "level" | "day" | "task";
             };
-            /** @description Оценка сервера по темпу пользователя */
+            /** @description Оценка сервера по темпу пользователя. Отсутствует, если сигнала недостаточно для честной оценки — не выдумывается */
             etaDays?: number;
             status: components["schemas"]["RewardStatus"];
             /** @description Если tier=cosmetic */
             cosmeticId?: string;
-            /**
-             * @description ТОЛЬКО при status claimed или used. В остальных случаях поле отсутствует
-             * @example AVI-7K3M-92XQ
-             */
-            promoCode?: string;
-            /** Format: uri */
-            redeemUrl?: string;
             /** Format: date-time */
             claimedAt?: string;
+            /**
+             * Format: date-time
+             * @description Когда награда применена (POST /rewards/{rewardId}/redeem-click). Отсутствует, пока status не used
+             */
+            usedAt?: string;
             /** Format: date-time */
             expiresAt?: string;
         };
@@ -1703,7 +1696,7 @@ export interface components {
     parameters: {
         /** @description UUID с клиента. Повтор с тем же ключом возвращает прежний результат, а не ошибку. */
         IdempotencyKey: string;
-        /** @description Обязателен: ретрай при плохой сети не должен выдать второй промокод. */
+        /** @description Обязателен: ретрай при плохой сети не должен выдать второй грант награды. */
         IdempotencyKeyRequired: string;
         TaskId: string;
         RewardId: string;
