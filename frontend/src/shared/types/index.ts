@@ -2,6 +2,7 @@ import type { components } from './api';
 
 export type Me = components['schemas']['Me'];
 export type Pet = components['schemas']['Pet'];
+export type PresetId = components['schemas']['PresetId'];
 export type Config = components['schemas']['Config'];
 export type Stats = components['schemas']['Stats'];
 export type PetMood = components['schemas']['PetMood'];
@@ -15,3 +16,6 @@ export type Cosmetic = components['schemas']['Cosmetic'];
 export type ErrorCode = components['schemas']['ErrorCode'];
 export type Envelope = components['schemas']['Envelope'];
 export type Meta = components['schemas']['Meta'];
+export type LeaderboardEntry = components['schemas']['LeaderboardEntry'];
+export type LeaderboardPage = components['schemas']['LeaderboardPage'];
+export type DailySummary = components['schemas']['DailySummary'];

@@ -24,9 +24,17 @@ export interface paths {
             requestBody: {
                 content: {
                     "application/json": {
-                        nickname: string;
+                        /** @description Логин для входа (решение команды 06.08) */
+                        login: string;
+                        /**
+                         * Format: password
+                         * @description Хранится только хешем; в ответах не возвращается
+                         */
+                        password: string;
                         /** @example Europe/Moscow */
                         timezone: string;
+                        /** @description Отображаемое имя, необязательно: по умолчанию берётся из login. Не учётные данные — см. Me.nickname */
+                        nickname?: string;
                     };
                 };
             };
@@ -71,7 +79,9 @@ export interface paths {
             requestBody: {
                 content: {
                     "application/json": {
-                        nickname: string;
+                        login: string;
+                        /** Format: password */
+                        password: string;
                     };
                 };
             };
@@ -190,6 +200,8 @@ export interface paths {
         /**
          * Справочник экономики
          * @description Фронт берёт отсюда скорость падения показателей, эффекты действий, пороги настроений, кривую уровней и множители стрика. Хардкодить эти числа в клиенте запрещено: при смене баланса разъедется. Кэшируется на сутки, поддерживает ETag.
+         *
+         *     ЕДИНСТВЕННЫЙ публичный эндпоинт: security переопределён на пустой список. Причина — это таблица констант, одинаковая для всех, и требовать токен ради неё значит запретить фронту рисовать что-либо до того, как приедет авторизация. Следствие, которое надо держать: сюда нельзя класть ничего, что зависит от пользователя. Персональный прогресс по вехам отдаёт GET /streak/milestones, а не это поле.
          */
         get: {
             parameters: {
@@ -1584,6 +1596,17 @@ export interface components {
                 value?: number;
             }[];
         };
+        /** @description Стоимость перехода на уровень L = base * factor^(L-2), округлённая до roundTo. Именованная схема, а не вложенный объект: из вложенного кодогенератор делает анонимную структуру, которую в Go нельзя собрать, не переписав её объявление вместе с тегами. */
+        LevelCurve: {
+            /** @example 100 */
+            base?: number;
+            /** @example 1.25 */
+            factor?: number;
+            /** @example 10 */
+            roundTo?: number;
+            /** @example 25 */
+            maxLevel?: number;
+        };
         Config: {
             stats?: {
                 [key: string]: {
@@ -1609,16 +1632,7 @@ export interface components {
                 minStat?: number;
                 multiplier?: number;
             }[];
-            levelCurve?: {
-                /** @example 100 */
-                base?: number;
-                /** @example 1.25 */
-                factor?: number;
-                /** @example 10 */
-                roundTo?: number;
-                /** @example 25 */
-                maxLevel?: number;
-            };
+            levelCurve?: components["schemas"]["LevelCurve"];
             streakTiers?: {
                 from?: number;
                 multiplier?: number;

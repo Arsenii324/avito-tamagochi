@@ -113,7 +113,7 @@ func TestDebugClockAdvanceWithoutTokenConfiguredStillWorks(t *testing.T) {
 
 // С заданным DEBUG_TOKEN сдвиг часов без правильного заголовка X-Debug-Token
 // обязан отказать — иначе публичный URL демо-стенда сможет дёргать любой
-// посетитель (docs/DEPLOYMENT.md).
+// посетитель (README.md → «Деплой»).
 func TestDebugClockAdvanceRequiresConfiguredToken(t *testing.T) {
 	t.Setenv("APP_ENV", "demo")
 	t.Setenv("DEBUG_TOKEN", "секрет")

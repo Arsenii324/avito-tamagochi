@@ -7,4 +7,13 @@ export default defineConfig({
   resolve: {
     tsconfigPaths: true,
   },
+  server: {
+    // У бэкенда нет CORS-миддлвари (AGENTS.md): в деве проксируем запросы,
+    // чтобы браузер видел same-origin вместо кросс-доменных.
+    proxy: {
+      '/api': { target: 'http://localhost:8080', changeOrigin: true },
+      '/debug': { target: 'http://localhost:8080', changeOrigin: true },
+      '/ws': { target: 'http://localhost:8080', changeOrigin: true, ws: true },
+    },
+  },
 });
