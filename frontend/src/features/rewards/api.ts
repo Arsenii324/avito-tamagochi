@@ -1,5 +1,6 @@
 import { baseApi } from '@/shared/api/baseApi';
 import type { Reward } from '@/shared/types';
+import { newUuid } from '@/shared/lib/uuid';
 
 export const rewardsApi = baseApi.injectEndpoints({
   endpoints: (builder) => ({
@@ -15,7 +16,7 @@ export const rewardsApi = baseApi.injectEndpoints({
       query: ({ rewardId }) => ({
         url: `/rewards/${rewardId}/claim`,
         method: 'POST',
-        headers: { 'Idempotency-Key': crypto.randomUUID() },
+        headers: { 'Idempotency-Key': newUuid() },
       }),
       // Инвалидация и на ошибке тоже: 409 REWARD_ALREADY_CLAIMED значит, что
       // реальное состояние на сервере уже другое (например, получено из

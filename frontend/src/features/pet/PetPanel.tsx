@@ -14,6 +14,7 @@ import { useActMutation, useGetPetQuery } from './api';
 import { useLiveUpdates } from './useLiveUpdates';
 import { CreatePetForm } from './CreatePetForm';
 import { toaster } from '@/shared/ui/theme/toaster-instance';
+import { newUuid } from '@/shared/lib/uuid';
 
 const STAT_LABELS: Record<keyof Stats, string> = {
   hunger: 'Сытость',
@@ -68,7 +69,7 @@ export function PetPanel() {
   }
 
   const handleAct = (kind: PetActionKind) => {
-    act({ actionId: crypto.randomUUID(), kind })
+    act({ actionId: newUuid(), kind })
       .unwrap()
       .catch((err: unknown) => {
         const message =
