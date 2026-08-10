@@ -755,9 +755,9 @@
         "properties": {
           "id": { "type": "string" },
           "tier": { "$ref": "#/components/schemas/RewardTier" },
-          "title": { "type": "string", "examples": ["Скидка 20% на Авито Доставку"] },
+          "title": { "type": "string", "examples": ["Скидка на Авито Доставку"] },
           "description": { "type": "string" },
-          "conditionLabel": { "type": "string", "examples": ["Достигни 10 уровня"],
+          "conditionLabel": { "type": "string", "examples": ["Уровень 10"],
             "description": "ГОТОВЫЙ текст с сервера. Фронт не склеивает фразы из чисел" },
           "progress": { "type": "object", "required": ["current", "target", "unit"],
             "properties": { "current": { "type": "integer" }, "target": { "type": "integer" },

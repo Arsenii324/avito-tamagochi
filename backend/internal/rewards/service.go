@@ -70,7 +70,7 @@ var DefaultCatalog = []CatalogEntry{
 	{
 		ID: "welcome-badge", Tier: TierCosmetic, RequiredLevel: 1,
 		Title:       "Значок «Первые шаги»",
-		Description: "Косметика для Ави — ничего не стоит, выдаётся сразу с первым уровнем.",
+		Description: "Украшение для Ави — открывается сразу, с первым уровнем.",
 		CosmeticID:  "badge-welcome",
 	},
 	{
@@ -124,7 +124,7 @@ func toReward(entry CatalogEntry, level int, grant *Grant) Reward {
 		Tier:            entry.Tier,
 		Title:           entry.Title,
 		Description:     entry.Description,
-		ConditionLabel:  fmt.Sprintf("Достигни %d уровня", entry.RequiredLevel),
+		ConditionLabel:  fmt.Sprintf("Уровень %d", entry.RequiredLevel),
 		ProgressCurrent: current,
 		ProgressTarget:  entry.RequiredLevel,
 		Status:          status,

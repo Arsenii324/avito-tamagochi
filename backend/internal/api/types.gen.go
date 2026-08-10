@@ -959,7 +959,7 @@ type Reward struct {
 
 	// ConditionLabel ГОТОВЫЙ текст с сервера. Фронт не склеивает фразы из чисел
 	//
-	// Examples: Достигни 10 уровня
+	// Examples: Уровень 10
 	ConditionLabel string `json:"conditionLabel"`
 
 	// CosmeticId Если tier=cosmetic
@@ -980,7 +980,7 @@ type Reward struct {
 	// Tier cosmetic — себестоимость 0, выдаётся напрямую · soft — бонусы кошелька, мелкие скидки · premium — платные услуги Авито, только с 10 уровня и вехи 100-дневного стрика. premium сегодня не встречается ни в одной награде каталога: вехи 100 без стрик-системы не существует, а выдумывать недостижимую награду нечестнее, чем не показывать её вовсе (docs/DECISIONS.md → 10.08)
 	Tier RewardTier `json:"tier"`
 
-	// Title Examples: Скидка 20% на Авито Доставку
+	// Title Examples: Скидка на Авито Доставку
 	Title string `json:"title"`
 
 	// UsedAt Когда награда применена (POST /rewards/{rewardId}/redeem-click). Отсутствует, пока status не used

@@ -1487,12 +1487,12 @@ export interface components {
         Reward: {
             id: string;
             tier: components["schemas"]["RewardTier"];
-            /** @example Скидка 20% на Авито Доставку */
+            /** @example Скидка на Авито Доставку */
             title: string;
             description?: string;
             /**
              * @description ГОТОВЫЙ текст с сервера. Фронт не склеивает фразы из чисел
-             * @example Достигни 10 уровня
+             * @example Уровень 10
              */
             conditionLabel: string;
             progress: {

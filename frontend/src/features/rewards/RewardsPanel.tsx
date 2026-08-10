@@ -65,7 +65,7 @@ function RewardRow({ reward }: { reward: Reward }) {
 
           {reward.status === 'locked' && (
             <Button size="sm" disabled>
-              Заблокировано
+              Пока недоступно
             </Button>
           )}
           {reward.status === 'available' && (
@@ -96,9 +96,7 @@ export function RewardsPanel() {
     <Card.Root maxW="lg" mx="auto">
       <Card.Header>
         <Heading size="md">Награды</Heading>
-        <Text color="fg.muted">
-          Право на бонус, привязанное к аккаунту — не промокод, который можно переслать
-        </Text>
+        <Text color="fg.muted">Бонусы на реальные услуги Авито — открываются по уровню Ави</Text>
       </Card.Header>
       <Card.Body>
         {isLoading && <Spinner />}

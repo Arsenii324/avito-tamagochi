@@ -1,4 +1,4 @@
-import { Container, Stack } from '@chakra-ui/react';
+import { Container, Heading, Stack, Text } from '@chakra-ui/react';
 import { PetPanel } from '@/features/pet/PetPanel';
 import { LeaderboardPanel } from '@/features/leaderboard/LeaderboardPanel';
 import { RewardsPanel } from '@/features/rewards/RewardsPanel';
@@ -13,6 +13,10 @@ export default function AppRouter() {
   return (
     <Container maxW="3xl" py="8">
       <Stack gap="6">
+        <Stack gap="1" textAlign="center">
+          <Heading size="lg">Ави</Heading>
+          <Text color="fg.muted">Заботься о питомце — получай бонусы Авито за уровень</Text>
+        </Stack>
         <DemoClockPanel />
         <PetPanel />
         <RewardsPanel />
