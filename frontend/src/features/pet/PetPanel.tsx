@@ -15,6 +15,7 @@ import { useLiveUpdates } from './useLiveUpdates';
 import { CreatePetForm } from './CreatePetForm';
 import { toaster } from '@/shared/ui/theme/toaster-instance';
 import { newUuid } from '@/shared/lib/uuid';
+import { PetAvatar } from './PetAvatar';
 
 const STAT_LABELS: Record<keyof Stats, string> = {
   hunger: 'Сытость',
@@ -90,6 +91,9 @@ export function PetPanel() {
         <Text color="fg.muted">
           Уровень {pet.level} · {pet.stageLabel ?? `стадия ${pet.stage}`}
         </Text>
+        <Stack align="center" pt="2">
+          <PetAvatar presetId={pet.presetId} mood={pet.mood} />
+        </Stack>
       </Card.Header>
       <Card.Body>
         <Stack gap="5">

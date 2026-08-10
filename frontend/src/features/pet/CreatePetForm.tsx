@@ -13,13 +13,15 @@ import {
 import type { PresetId } from '@/shared/types';
 import { useCreatePetMutation } from './api';
 import { toaster } from '@/shared/ui/theme/toaster-instance';
+import { PetAvatar } from './PetAvatar';
 
-// Четыре круга Авито как персонажа рисовать нельзя (AGENTS.md → Never) —
-// пресеты различаются подписью и акцентным цветом чипа, не логотипом.
-const PRESETS: { id: PresetId; label: string; color: string }[] = [
-  { id: 'green', label: 'Зелёный', color: 'green.solid' },
-  { id: 'blue', label: 'Синий', color: 'blue.solid' },
-  { id: 'purple', label: 'Фиолетовый', color: 'purple.solid' },
+// Четыре круга Авито как персонажа рисовать нельзя (AGENTS.md → Never).
+// Пресет меняет раскраску зверька (PetAvatar), а не логотип: цвета берутся
+// в ролях, которые называет контракт — тело, большое ухо, малое ухо, лапа.
+const PRESETS: { id: PresetId; label: string }[] = [
+  { id: 'green', label: 'Зелёный' },
+  { id: 'blue', label: 'Синий' },
+  { id: 'purple', label: 'Фиолетовый' },
 ];
 
 export function CreatePetForm() {
@@ -45,6 +47,10 @@ export function CreatePetForm() {
       <Card.Body>
         <form onSubmit={handleSubmit}>
           <Stack gap="4">
+            <Stack align="center">
+              <PetAvatar presetId={presetId} mood="happy" size={112} />
+            </Stack>
+
             <Field.Root>
               <Field.Label>Пресет</Field.Label>
               <RadioGroup.Root
