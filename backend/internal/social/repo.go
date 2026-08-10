@@ -207,6 +207,30 @@ func (r *Repo) Day(ctx context.Context, userID uuid.UUID, day time.Time) (DaySum
 		out.LastAction = &last
 	}
 
+	// Сутки, уже отмеченные просмотренными, показывать снова нельзя.
+	//
+	// Проверка стоит здесь, а не рядом с `ShouldShow = len(Breakdown) > 0`
+	// выше, намеренно: блок над ней заполняет LastAction только при
+	// ShouldShow, и погасить флаг раньше значило бы отдать сводку без
+	// последнего действия. Сначала собираем содержимое, потом решаем,
+	// показывать ли.
+	//
+	// До этой проверки daily_summary_views была таблицей только на запись:
+	// MarkSeen в неё вставляла, а не читал её никто, кроме теста. Живьём это
+	// выглядело так, что модалка «Итоги дня» открывалась поверх питомца при
+	// каждой загрузке страницы и не закрывалась насовсем — POST
+	// /summary/daily/seen отрабатывал 204 и ни на что не влиял.
+	if out.ShouldShow {
+		var seen bool
+		if seenErr := r.pool.QueryRow(ctx, `
+			SELECT EXISTS(SELECT 1 FROM daily_summary_views WHERE user_id = $1 AND date = $2)`,
+			userID, day,
+		).Scan(&seen); seenErr != nil {
+			return DaySummary{}, fmt.Errorf("social: проверка отметки просмотра: %w", seenErr)
+		}
+		out.ShouldShow = !seen
+	}
+
 	return out, nil
 }
 

@@ -293,6 +293,70 @@ func TestMarkSeenIsIdempotent(t *testing.T) {
 	}
 }
 
+// Отметка обязана ГАСИТЬ ShouldShow, а не просто лечь строкой в таблицу.
+//
+// Тест выше проверял только факт записи, и из-за этого баг прожил незамеченным:
+// daily_summary_views была таблицей только на запись — MarkSeen в неё вставляла,
+// а Summary её не читала вовсе. Наружу это выходило тем, что модалка «Итоги дня»
+// открывалась поверх питомца при КАЖДОЙ загрузке страницы, сколько её ни
+// закрывай, а POST /summary/daily/seen отвечал 204 и ни на что не влиял.
+// Проверять надо следствие, а не факт записи.
+func TestSummaryStopsShowingOnceMarkedSeen(t *testing.T) {
+	f := newSeedFixture(t)
+	ctx := context.Background()
+	userID := uuid.New()
+	f.seedPet(t, userID, "Закрывающий", 0)
+	f.seedAction(t, userID, "feed", 10, day(0), base, pet.ActResult{})
+
+	before, err := f.svc.Summary(ctx, userID, ptr(day(0)))
+	if err != nil {
+		t.Fatalf("Summary до отметки: %v", err)
+	}
+	if !before.ShouldShow {
+		t.Fatal("ShouldShow = false ещё до отметки — тест проверяет не то, что думает")
+	}
+
+	if err := f.svc.MarkSeen(ctx, userID, day(0)); err != nil {
+		t.Fatalf("MarkSeen: %v", err)
+	}
+
+	after, err := f.svc.Summary(ctx, userID, ptr(day(0)))
+	if err != nil {
+		t.Fatalf("Summary после отметки: %v", err)
+	}
+	if after.ShouldShow {
+		t.Error("ShouldShow = true после MarkSeen — сводку закрыли, а она открывается снова")
+	}
+	// Содержимое при этом никуда не девается: клиент вправе открыть сводку
+	// сам, просто она больше не всплывает поверх экрана без спроса.
+	if after.XPTotal != before.XPTotal || len(after.Breakdown) != len(before.Breakdown) {
+		t.Errorf("отметка просмотра не должна менять содержимое сводки: было XP=%d/%d строк, стало XP=%d/%d",
+			before.XPTotal, len(before.Breakdown), after.XPTotal, len(after.Breakdown))
+	}
+}
+
+// Отметка одних суток не должна гасить другие: сводка за каждый день своя.
+func TestSummarySeenIsPerDay(t *testing.T) {
+	f := newSeedFixture(t)
+	ctx := context.Background()
+	userID := uuid.New()
+	f.seedPet(t, userID, "Двухдневный", 0)
+	f.seedAction(t, userID, "feed", 10, day(0), base, pet.ActResult{})
+	f.seedAction(t, userID, "play", 12, day(-1), base.Add(-24*time.Hour), pet.ActResult{})
+
+	if err := f.svc.MarkSeen(ctx, userID, day(0)); err != nil {
+		t.Fatalf("MarkSeen: %v", err)
+	}
+
+	other, err := f.svc.Summary(ctx, userID, ptr(day(-1)))
+	if err != nil {
+		t.Fatalf("Summary соседних суток: %v", err)
+	}
+	if !other.ShouldShow {
+		t.Error("отметка одних суток погасила сводку других — просмотр считается по дням")
+	}
+}
+
 // Базовый порядок: больше опыта за неделю — выше в списке.
 func TestLeaderboardOrdersByWeeklyXP(t *testing.T) {
 	f := newSeedFixture(t)
