@@ -316,8 +316,8 @@ func TestSummaryStopsShowingOnceMarkedSeen(t *testing.T) {
 		t.Fatal("ShouldShow = false ещё до отметки — тест проверяет не то, что думает")
 	}
 
-	if err := f.svc.MarkSeen(ctx, userID, day(0)); err != nil {
-		t.Fatalf("MarkSeen: %v", err)
+	if markErr := f.svc.MarkSeen(ctx, userID, day(0)); markErr != nil {
+		t.Fatalf("MarkSeen: %v", markErr)
 	}
 
 	after, err := f.svc.Summary(ctx, userID, ptr(day(0)))
