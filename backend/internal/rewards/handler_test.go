@@ -64,6 +64,11 @@ func (f *handlerFixture) seedPet(t *testing.T, totalXP int) {
 	}
 }
 
+// invariant:2 — награда привязана к пользователю (PRIMARY KEY (user_id,
+// reward_id) в reward_grants; каждый запрос этого пакета скопирован по
+// userID из authctx, кросс-пользовательского чтения нет ни в одном
+// маршруте), без пересылаемого кода — явная проверка ниже, что promoCode
+// в ответе отсутствует вообще, не просто пуст.
 func TestRewardsListHTTPFieldNames(t *testing.T) {
 	f := newHandlerFixture(t)
 	f.seedPet(t, 0)
