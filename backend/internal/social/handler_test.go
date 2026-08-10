@@ -17,8 +17,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"tamagochi/internal/advisor"
 	"tamagochi/internal/config"
 	"tamagochi/internal/pet"
+	"tamagochi/internal/rewards"
 	"tamagochi/internal/social"
 	"tamagochi/pkg/authctx"
 	"tamagochi/pkg/clock"
@@ -38,7 +40,7 @@ func newHandlerFixture(t *testing.T) *handlerFixture {
 	if err != nil {
 		t.Fatalf("сборка сервиса: %v", err)
 	}
-	h := social.NewHandler(svc)
+	h := social.NewHandler(svc, nil, nil)
 
 	userID := uuid.New()
 	gin.SetMode(gin.TestMode)
@@ -224,7 +226,7 @@ func TestLeaderboardRequiresIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("сборка сервиса: %v", err)
 	}
-	h := social.NewHandler(svc)
+	h := social.NewHandler(svc, nil, nil)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
@@ -273,8 +275,11 @@ func (f *handlerFixture) seedPetWithLastAction(t *testing.T, userID uuid.UUID, n
 }
 
 // Имена полей — ровно контрактные (docs/openapi.json → DailySummary), и
-// именно те поля, что этот срез честно заполняет: streak/tomorrow/aiNote/
-// moodBefore должны ОТСУТСТВОВАТЬ (omitempty), а не нести выдуманные данные.
+// именно те поля, что этот срез честно заполняет: streak/tomorrow/moodBefore
+// должны ОТСУТСТВОВАТЬ (omitempty), а не нести выдуманные данные — стрика в
+// проекте нет вообще, «до»-снимка настроения не существует. aiNote тоже
+// отсутствует здесь, но по другой причине: у newHandlerFixture нет advisor —
+// см. TestSummaryDailyHTTPIncludesAiNoteWhenAdvisorConfigured ниже, где он есть.
 func TestSummaryDailyHTTPFieldNames(t *testing.T) {
 	f := newHandlerFixture(t)
 	result := pet.ActResult{
@@ -361,13 +366,75 @@ func TestSummaryDailyHTTPFieldNames(t *testing.T) {
 	}
 }
 
+// С реальным rewards.Service и advisor.TemplateProvider aiNote обязан
+// появиться в ответе — доказывает, что h.aiNote (handler.go) действительно
+// собирает Situation и зовёт Provider, а не только компилируется.
+// TemplateProvider детерминирован и без сети — гонять живой GigaChat в этом
+// тесте не нужно и не нужно вовсе (см. gigachat_test.go в internal/advisor).
+func TestSummaryDailyHTTPIncludesAiNoteWhenAdvisorConfigured(t *testing.T) {
+	pool := pgtest.Pool(t)
+	svc, err := social.NewService(social.NewRepo(pool), clock.NewFixed(base), config.DefaultCurve)
+	if err != nil {
+		t.Fatalf("сборка сервиса social: %v", err)
+	}
+	rewardsSvc, err := rewards.NewService(rewards.NewRepo(pool), rewards.DefaultCatalog, config.DefaultCurve)
+	if err != nil {
+		t.Fatalf("сборка сервиса rewards: %v", err)
+	}
+	h := social.NewHandler(svc, rewardsSvc, advisor.TemplateProvider{})
+
+	userID := uuid.New()
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	identity := func(c *gin.Context) {
+		c.Request = c.Request.WithContext(authctx.WithUserID(c.Request.Context(), userID))
+		c.Next()
+	}
+	h.Register(r.Group("/api/v1", identity))
+	srv := httptest.NewServer(r)
+	t.Cleanup(srv.Close)
+
+	f := &handlerFixture{server: srv, pool: pool, userID: userID}
+	f.seedPetWithLastAction(t, userID, "Советчик", 10, pet.ActResult{
+		Pet: pet.View{
+			Stats: pet.Stats{Hunger: 20, Joy: 70, Clean: 90, Energy: 60},
+			Mood:  pet.MoodNeutral,
+			Actions: map[pet.ActionKind]pet.Availability{
+				pet.ActionFeed:  {Remaining: 3},
+				pet.ActionPlay:  {Remaining: 0},
+				pet.ActionWash:  {Remaining: 2},
+				pet.ActionSleep: {Remaining: 1},
+				pet.ActionWake:  {Remaining: 0},
+			},
+		},
+	})
+
+	resp, err := http.Get(f.server.URL + "/api/v1/summary/daily?date=" + day(0).Format("2006-01-02"))
+	if err != nil {
+		t.Fatalf("GET /summary/daily: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var env struct {
+		Data map[string]any `json:"data"`
+	}
+	if decodeErr := json.NewDecoder(resp.Body).Decode(&env); decodeErr != nil {
+		t.Fatalf("ответ не разбирается: %v", decodeErr)
+	}
+
+	note, ok := env.Data["aiNote"].(string)
+	if !ok || note == "" {
+		t.Fatalf("data.aiNote = %v, ожидалась непустая строка — advisor сконфигурирован", env.Data["aiNote"])
+	}
+}
+
 func TestSummaryDailyRequiresIdentity(t *testing.T) {
 	pool := pgtest.Pool(t)
 	svc, err := social.NewService(social.NewRepo(pool), clock.NewFixed(base), config.DefaultCurve)
 	if err != nil {
 		t.Fatalf("сборка сервиса: %v", err)
 	}
-	h := social.NewHandler(svc)
+	h := social.NewHandler(svc, nil, nil)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
@@ -440,7 +507,7 @@ func TestSummaryDailySeenRequiresIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("сборка сервиса: %v", err)
 	}
-	h := social.NewHandler(svc)
+	h := social.NewHandler(svc, nil, nil)
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()

@@ -1,30 +1,47 @@
 package social
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	openapitypes "github.com/oapi-codegen/runtime/types"
 
+	"tamagochi/internal/advisor"
 	"tamagochi/internal/api"
 	"tamagochi/internal/httpx"
+	"tamagochi/internal/pet"
+	"tamagochi/internal/rewards"
 	"tamagochi/pkg/authctx"
 )
 
 // Слой транспорта: знает про Gin и типы контракта, не знает, как считается
 // ранг или окно недели — то service.go. depguard (handler-layer) запрещает
 // этому файлу импортировать pgx.
+//
+// aiNote — единственное поле сводки, для которого этому файлу нужны ДВЕ
+// чужие фичи разом (rewards.Service.Next, advisor.Provider): Summary
+// (service.go) остаётся чистой функцией без сети, а композиция нужного
+// клиенту ответа — то, для чего и существует handler.go. Ничего из этого
+// не течёт обратно в Service.
 
 // Handler отвечает на HTTP для тега social.
 type Handler struct {
-	svc *Service
+	svc     *Service
+	rewards *rewards.Service
+	advisor advisor.Provider
 }
 
-// NewHandler собирает обработчик.
-func NewHandler(svc *Service) *Handler { return &Handler{svc: svc} }
+// NewHandler собирает обработчик. advisorProvider может быть nil — тогда
+// aiNote в ответе не заполняется вообще (честное отсутствие, тот же приём,
+// что уже был до этой фичи, см. toAPISummary).
+func NewHandler(svc *Service, rewardsSvc *rewards.Service, advisorProvider advisor.Provider) *Handler {
+	return &Handler{svc: svc, rewards: rewardsSvc, advisor: advisorProvider}
+}
 
 // Register вешает маршруты тега social на переданную группу.
 func (h *Handler) Register(r gin.IRoutes) {
@@ -152,7 +169,82 @@ func (h *Handler) summaryDaily(c *gin.Context) {
 		return
 	}
 
-	httpx.OK(c.Writer, c.Request, http.StatusOK, toAPISummary(summary), "Сводка дня")
+	out := toAPISummary(summary)
+	if note, noteOK := h.aiNote(c.Request.Context(), userID, summary); noteOK {
+		out.AiNote = &note
+	}
+
+	httpx.OK(c.Writer, c.Request, http.StatusOK, out, "Сводка дня")
+}
+
+// aiNote считает advisor.Situation поверх Summary и rewards.Service.Next и
+// зовёт h.advisor. Любой сбой (advisor не сконфигурирован, ошибка модели,
+// таймаут) — просто ok=false: aiNote остаётся отсутствующим полем, ровно
+// как до этой фичи, а не 500 всей сводке дня из-за необязательного текста.
+func (h *Handler) aiNote(ctx context.Context, userID uuid.UUID, s Summary) (string, bool) {
+	if h.advisor == nil || !s.HasPetSnapshot {
+		return "", false
+	}
+
+	situation := advisor.Situation{
+		PetName:          "Ави",
+		Level:            s.LevelAfter,
+		LeveledUp:        s.LevelAfter > s.LevelBefore,
+		AvailableActions: availableActions(s.Actions),
+	}
+	situation.LowestStat, situation.LowestStatValue = lowestStat(s.StatsAfter)
+
+	if h.rewards != nil {
+		if reward, found, err := h.rewards.Next(ctx, userID); err == nil && found {
+			situation.NextRewardTitle = reward.Title
+			situation.NextRewardLevelsAway = reward.ProgressTarget - reward.ProgressCurrent
+		}
+	}
+
+	advice, err := h.advisor.Advise(ctx, situation)
+	if err != nil || advice.Note == "" {
+		return "", false
+	}
+	return advice.Note, true
+}
+
+// lowestStat — какой из четырёх показателей питомца сейчас ниже остальных.
+// Не «просел за сутки» (истории по показателям нет) — то, что нуждается в
+// заботе прямо сейчас, по последнему известному снимку.
+func lowestStat(s pet.Stats) (name string, value int) {
+	type kv struct {
+		name  string
+		value int
+	}
+	stats := []kv{
+		{"hunger", s.Hunger},
+		{"joy", s.Joy},
+		{"clean", s.Clean},
+		{"energy", s.Energy},
+	}
+	lowest := stats[0]
+	for _, x := range stats[1:] {
+		if x.value < lowest.value {
+			lowest = x
+		}
+	}
+	return lowest.name, lowest.value
+}
+
+// availableActions — действия ухода, у которых сегодня остался лимит, в
+// порядке pet.ActionKinds. wake сюда не попадает: это не совет «сделай
+// что-нибудь», а контекстное действие, доступное только спящему питомцу.
+func availableActions(actions map[pet.ActionKind]pet.Availability) []string {
+	out := make([]string, 0, len(actions))
+	for _, kind := range pet.ActionKinds {
+		if kind == pet.ActionWake {
+			continue
+		}
+		if a, ok := actions[kind]; ok && a.Remaining > 0 {
+			out = append(out, string(kind))
+		}
+	}
+	return out
 }
 
 // summaryDailySeen отвечает на POST /summary/daily/seen.
@@ -202,10 +294,12 @@ func parseSummaryDate(raw string) (*time.Time, error) {
 
 // toAPISummary переводит доменную Summary в тип контракта.
 //
-// Streak/Tomorrow/AiNote остаются nil намеренно: система стриков и
-// AI-заметки не построены (см. докстринг Summary в service.go) — контракт
-// помечает все три необязательными именно для случаев вроде этого, честное
-// отсутствие поля лучше выдуманного значения под его именем.
+// Streak/Tomorrow остаются nil намеренно: система стриков не построена (см.
+// докстринг Summary в service.go) — контракт помечает оба необязательными
+// именно для случаев вроде этого, честное отсутствие поля лучше выдуманного
+// значения под его именем. AiNote сюда не входит — его выставляет
+// summaryDaily поверх результата этой функции (см. h.aiNote), не сама эта
+// функция: чистый маппинг Summary→DailySummary не должен звонить в advisor.
 func toAPISummary(s Summary) api.DailySummary {
 	date := openapitypes.Date{Time: s.Date}
 	shouldShow := s.ShouldShow

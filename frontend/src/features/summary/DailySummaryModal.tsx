@@ -54,6 +54,11 @@ export function DailySummaryModal() {
                       : `Уровень: ${data.pet.levelAfter}`}
                   </Text>
                 )}
+                {data.aiNote && (
+                  <Text fontStyle="italic" color="fg.muted">
+                    «{data.aiNote}»
+                  </Text>
+                )}
               </Stack>
             </Dialog.Body>
             <Dialog.Footer>

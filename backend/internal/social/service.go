@@ -289,11 +289,14 @@ type BreakdownEntry struct {
 }
 
 // Summary — сводка суток, как её видит клиент. Урезанная часть контракта
-// (docs/openapi.json → DailySummary): стрик-система и AI-заметки не
-// построены (docs/DECISIONS.md, AGENTS.md → стоп-вопросы), поэтому
-// Multiplier честно всегда 1, а Streak/Tomorrow/AiNote в ответ вообще не
-// попадают — handler.go оставляет соответствующие поля nil, а не подсовывает
-// выдуманные данные под видом настоящих.
+// (docs/openapi.json → DailySummary): стрик-система не построена
+// (docs/DECISIONS.md, AGENTS.md → стоп-вопросы), поэтому Multiplier
+// честно всегда 1, а Streak/Tomorrow в ответ вообще не попадают —
+// handler.go оставляет соответствующие поля nil, а не подсовывает
+// выдуманные данные под видом настоящих. AiNote в контракте есть и
+// заполняется — см. handler.go: считает internal/advisor поверх Actions
+// ниже и internal/rewards.Service.Next, сам Summary остаётся об этом не в
+// курсе (в domain-слое сети и внешних сервисов нет).
 type Summary struct {
 	Date        time.Time
 	ShouldShow  bool
@@ -303,11 +306,15 @@ type Summary struct {
 	LevelBefore int
 	LevelAfter  int
 	// HasPetSnapshot — было ли за сутки хоть одно действие ухода: если нет,
-	// StatsAfter/MoodAfter нечем заполнить, контракт помечает pet как
+	// StatsAfter/MoodAfter/Actions нечем заполнить, контракт помечает pet как
 	// необязательное поле именно для этого случая.
 	HasPetSnapshot bool
 	StatsAfter     pet.Stats
 	MoodAfter      pet.Mood
+	// Actions — суточные лимиты ухода на момент последнего действия (тот же
+	// снимок, что StatsAfter/MoodAfter). Нужен только advisor.Situation в
+	// handler.go — сам Summary их не читает и не решает по ним ничего.
+	Actions map[pet.ActionKind]pet.Availability
 }
 
 // Summary возвращает сводку конкретных суток пользователя. date — уже
@@ -368,6 +375,7 @@ func (s *Service) Summary(ctx context.Context, userID uuid.UUID, date *time.Time
 		out.HasPetSnapshot = true
 		out.StatsAfter = raw.LastAction.Pet.Stats
 		out.MoodAfter = raw.LastAction.Pet.Mood
+		out.Actions = raw.LastAction.Pet.Actions
 	}
 
 	return out, nil

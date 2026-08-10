@@ -3,11 +3,13 @@ package main
 import (
 	"fmt"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"tamagochi/internal/advisor"
 	"tamagochi/internal/api"
 	"tamagochi/internal/config"
 	"tamagochi/internal/httpx"
@@ -108,17 +110,17 @@ func newRouter(pool *pgxpool.Pool) (*gin.Engine, error) {
 	petHandler := pet.NewHandler(petSvc, wsh.NewHub(), clock.Real{})
 	petHandler.Register(v1)
 
-	socialSvc, err := social.NewService(social.NewRepo(pool), appClock, config.DefaultCurve)
-	if err != nil {
-		return nil, fmt.Errorf("сборка сервиса social: %w", err)
-	}
-	social.NewHandler(socialSvc).Register(v1)
-
 	rewardsSvc, err := rewards.NewService(rewards.NewRepo(pool), rewards.DefaultCatalog, config.DefaultCurve)
 	if err != nil {
 		return nil, fmt.Errorf("сборка сервиса rewards: %w", err)
 	}
 	rewards.NewHandler(rewardsSvc).Register(v1)
+
+	socialSvc, err := social.NewService(social.NewRepo(pool), appClock, config.DefaultCurve)
+	if err != nil {
+		return nil, fmt.Errorf("сборка сервиса social: %w", err)
+	}
+	social.NewHandler(socialSvc, rewardsSvc, newAdvisorProvider()).Register(v1)
 
 	// Пульт демо-стенда — вне apiPrefix и вне контракта, ровно как /healthz.
 	// Существует только вместе с demoClk: без APP_ENV=demo часы настоящие,
@@ -143,4 +145,25 @@ func newRouter(pool *pgxpool.Pool) (*gin.Engine, error) {
 // healthz отвечает на служебную проверку живости.
 func healthz(c *gin.Context) {
 	c.Data(http.StatusOK, "application/json", []byte(`{"status":"ok"}`))
+}
+
+// newAdvisorProvider собирает advisor.Provider для aiNote.
+//
+// GIGACHAT_AUTH_KEY не задан — часто и нормально: возвращает
+// TemplateProvider напрямую, без обёртки в FallbackProvider. Задан — модель
+// пробуется первой, а любой её сбой (сеть, таймаут, невалидный ответ)
+// переводит на тот же TemplateProvider (docs/DECISIONS.md → план на
+// 11–14.08, «Продукт полностью работоспособен с выключенным ИИ»).
+//
+// Часы для кэша OAuth-токена — всегда настоящие (clock.Real{}), не appClock
+// демо-стенда: 30-минутный токен живёт по часам самого GigaChat, а не по
+// тем, что двигает панель демо-времени.
+func newAdvisorProvider() advisor.Provider {
+	authKey := os.Getenv("GIGACHAT_AUTH_KEY")
+	if authKey == "" {
+		return advisor.TemplateProvider{}
+	}
+	httpClient := advisor.NewHTTPClient(10 * time.Second)
+	gigachat := advisor.NewGigaChatProvider(httpClient, authKey, clock.Real{})
+	return advisor.NewFallbackProvider(gigachat, advisor.TemplateProvider{})
 }
