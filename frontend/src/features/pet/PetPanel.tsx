@@ -92,7 +92,7 @@ export function PetPanel() {
           Уровень {pet.level} · {pet.stageLabel ?? `стадия ${pet.stage}`}
         </Text>
         <Stack align="center" pt="2">
-          <PetAvatar presetId={pet.presetId} mood={pet.mood} />
+          <PetAvatar presetId={pet.presetId} mood={pet.mood} stage={pet.stage} />
         </Stack>
       </Card.Header>
       <Card.Body>

@@ -114,16 +114,30 @@ const FACES: Record<PetMood, { eyes: React.ReactNode; mouth: string }> = {
   },
 };
 
+// Стадия видна глазом, а не только подписью. Кейс требует ровно этого — «чем
+// регулярнее пользователь взаимодействует с питомцем, тем заметнее прогресс»;
+// до этого Ави на 1-м и на 20-м уровне выглядел одинаково, и весь прогресс
+// жил в тексте «стадия 3».
+//
+// Стадии и уровни задаёт бэкенд (internal/pet.stageTiers): 1 Новичок, 2
+// Искатель (с 5), 3 Знаток (с 10), 4 Хранитель (с 18). Здесь только внешность.
+const STAGE_EAR_GROWTH: Record<number, number> = { 1: 0, 2: 2, 3: 4, 4: 6 };
+
 interface PetAvatarProps {
   presetId: PresetId;
   mood: PetMood;
+  /** Стадия питомца 1..4 (Pet.stage). Влияет на уши и отличия стадии. */
+  stage?: number;
   /** Сторона квадрата в пикселях. */
   size?: number;
 }
 
-export function PetAvatar({ presetId, mood, size = 132 }: PetAvatarProps) {
+export function PetAvatar({ presetId, mood, stage = 1, size = 132 }: PetAvatarProps) {
   const colors = PRESET_COLORS[presetId];
   const face = FACES[mood];
+  // Стадия приходит с бэкенда и по контракту всегда 1..4, но приводим сами:
+  // отрисовка не то место, где стоит падать из-за неожиданного числа.
+  const grow = STAGE_EAR_GROWTH[stage] ?? 0;
 
   return (
     <svg
@@ -131,11 +145,12 @@ export function PetAvatar({ presetId, mood, size = 132 }: PetAvatarProps) {
       height={size}
       viewBox="0 0 120 120"
       role="img"
-      aria-label={`Питомец, настроение: ${mood}`}
+      aria-label={`Питомец, настроение: ${mood}, стадия ${stage}`}
     >
-      {/* Большое и малое ухо — разного размера, как называет их контракт. */}
-      <ellipse cx="36" cy="24" rx="14" ry="18" fill={colors.earL} />
-      <ellipse cx="82" cy="28" rx="10" ry="13" fill={colors.earS} />
+      {/* Большое и малое ухо — разного размера, как называет их контракт.
+          С каждой стадией подрастают: самый заметный признак взросления. */}
+      <ellipse cx="36" cy={24 - grow} rx={14 + grow} ry={18 + grow} fill={colors.earL} />
+      <ellipse cx="82" cy={28 - grow} rx={10 + grow} ry={13 + grow} fill={colors.earS} />
 
       {/* Тело. */}
       <ellipse cx="60" cy="58" rx="38" ry="36" fill={colors.body} />
@@ -161,6 +176,29 @@ export function PetAvatar({ presetId, mood, size = 132 }: PetAvatarProps) {
           <path d="M14 40 l3 -7 3 7 7 3 -7 3 -3 7 -3 -7 -7 -3 z" fill={AVITO.coral} />
           <path d="M100 62 l2 -5 2 5 5 2 -5 2 -2 5 -2 -5 -5 -2 z" fill={AVITO.green} />
         </>
+      )}
+
+      {/* Отличия стадий. Каждая следующая ДОБАВЛЯЕТ признак, а не заменяет
+          предыдущий: рост должен читаться как накопленный, а не как смена
+          костюма. «Новичок» отличий не имеет — ему ещё нечем отличаться. */}
+      {stage >= 2 && <ellipse cx="60" cy="20" rx="3.5" ry="6" fill={colors.earS} />}
+      {stage >= 3 && (
+        <path
+          d="M34 78 q26 12 52 0 v7 q-26 12 -52 0 z"
+          fill={colors.paw}
+          stroke="#1A1A1A"
+          strokeOpacity="0.12"
+          strokeWidth="1"
+        />
+      )}
+      {stage >= 4 && (
+        <path
+          d="M44 8 l6 9 5 -11 5 11 6 -9 -3 13 h-16 z"
+          fill="#FFC400"
+          stroke="#1A1A1A"
+          strokeOpacity="0.15"
+          strokeWidth="1"
+        />
       )}
     </svg>
   );
