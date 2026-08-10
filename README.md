@@ -31,11 +31,15 @@ export TEST_DATABASE_URL=postgres://tamagochi:tamagochi@localhost:5432/tamagochi
 нужен. `make dev` — то же плюс стек в Docker. Мок ещё и проверяет запросы:
 тело не по контракту получит 422 со списком неверных полей, а не молчаливые 200.
 
-Сам фронт — `npm --prefix frontend install && npm --prefix frontend run dev`,
-отдельно от `make up`/`make dev` (в docker-compose фронта пока нет — см. «Для
-защиты» ниже). Vite-прокси (`frontend/vite.config.ts`) уже смотрит на
-`localhost:8080` для `/api`, `/debug` и `/ws` — достаточно, чтобы бэкенд был
-поднят `make up` или `go run ./cmd` с `APP_ENV=demo`.
+Для разработки фронта — `npm --prefix frontend install && npm --prefix frontend
+run dev` (хот-релоуд), отдельно от `make up`/`make dev`. Vite-прокси
+(`frontend/vite.config.ts`) уже смотрит на `localhost:8080` для `/api`,
+`/debug` и `/ws` — достаточно, чтобы бэкенд был поднят `make up` или
+`go run ./cmd` с `APP_ENV=demo`.
+
+`make up`/`docker-compose.yaml` тоже поднимает фронт (`:3000`), но не для
+разработки: это собранный продовый бандл за nginx, без хот-релоуда — см.
+«Для защиты» → «Что реально построено».
 
 ## Проверка
 
@@ -90,6 +94,13 @@ TEST_DATABASE_URL=postgres://user:pass@localhost:5432/tamagochi make test
 | `APP_ENV` | для публичного показа — да | `demo`: без неё `/pet*` и `/ws` отвечают 401 всем — настоящего входа ещё нет (см. «Для защиты» выше) |
 | `DEBUG_TOKEN` | для публичного URL — да | без неё `POST /debug/clock/advance` открыт всем посетителям и может дёргать общее демо-время — см. докстринг `requireDebugToken` в `backend/cmd/demo_clock.go` |
 | `GIGACHAT_AUTH_KEY` | нет | Basic-креды GigaChat (не сам access token — `internal/advisor` обменивает их сам). Без неё `aiNote` в сводке дня работает на детерминированном шаблоне, без модели — не 500 и не отсутствующее поле |
+
+С `GIGACHAT_AUTH_KEY` стоит проверить на реальном хостинге, а не полагаться на
+эту сессию: живая проверка отсюда дошла до `api.giga.chat` (TLS проходит,
+сертификат Минцифры встроен), но OAuth-хост `ngw.devices.sberbank.ru:9443` из
+сетевой песочницы агента был недоступен на уровне TLS-хендшейка — это похоже
+на ограничение именно этой песочницы, не на баг кода (`docs/AI-USAGE.md`).
+На обычном хостинге обмен токена может просто заработать.
 
 После первого деплоя — `make seed` с `DATABASE_URL`, указывающим на
 продовую базу, один раз наполняет её демо-данными (идемпотентно, безопасно
